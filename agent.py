@@ -1,8 +1,7 @@
 import asyncio
 from dotenv import load_dotenv
 from livekit import agents
-from livekit.agents import JobContext, JobProcess, llm
-from livekit.agents.pipeline import VoicePipelineAgent 
+from livekit.agents import JobContext, JobProcess, AgentSession, Agent, RoomInputOptions
 from livekit.plugins import google, silero, noise_cancellation
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
 from tools import get_weather, search_web, send_email, get_time
@@ -10,47 +9,42 @@ from tools import get_weather, search_web, send_email, get_time
 load_dotenv()
 
 def prewarm(proc: JobProcess):
-    # Load VAD model into memory for instant voice detection
-    proc.userdata["vad"] = silero.VAD.load()
+    silero.VAD.load()
 
 async def entrypoint(ctx: JobContext):
     await ctx.connect()
-    print(f"--- Protocol Initiated: {ctx.room.name} ---")
-
-    # Setup the butler's persona
-    chat_context = llm.ChatContext().append(
-        role="system",
-        text=AGENT_INSTRUCTION,
+    
+    # Define JARVIS as a standard Agent
+    # This automatically handles the voice, tools, and instructions
+    jarvis_agent = Agent(
+        instructions=AGENT_INSTRUCTION,
+        tools=[get_weather, search_web, send_email, get_time]
     )
 
-    # Initialize the JARVIS Pipeline
-    jarvis = VoicePipelineAgent(
-        vad=ctx.proc.userdata["vad"],
-        stt=google.STT(),
+    # Use AgentSession - this is the most stable way to run the agent
+    session = AgentSession(
         llm=google.beta.realtime.RealtimeModel(
-            voice="Charon", # High-quality British-style voice
+            voice="Charon",
             temperature=0.7,
         ),
-        tts=google.TTS(),
-        chat_ctx=chat_context,
-        fnc_ctx=llm.FunctionContext()
+        vad=silero.VAD.load(),
+        # Add background noise cancellation for a cleaner experience
+        room_input_options=RoomInputOptions(
+            noise_cancellation=noise_cancellation.BVC()
+        )
     )
 
-    # Register tools manually to the function context
-    jarvis.fnc_ctx.add_callable(get_weather)
-    jarvis.fnc_ctx.add_callable(search_web)
-    jarvis.fnc_ctx.add_callable(send_email)
-    jarvis.fnc_ctx.add_callable(get_time)
+    # Start the session with your agent
+    await session.start(room=ctx.room, agent=jarvis_agent)
 
-    # Start and Speak the greeting
-    jarvis.start(ctx.room)
-    await jarvis.say(SESSION_INSTRUCTION, allow_interruptions=True)
+    # Make JARVIS say his greeting
+    await session.generate_reply(instructions=SESSION_INSTRUCTION)
 
     try:
         while ctx.room.is_connected():
             await asyncio.sleep(1)
     except Exception as e:
-        print(f"System Error: {e}")
+        print(f"Connection lost: {e}")
 
 if __name__ == "__main__":
     agents.cli.run_app(agents.WorkerOptions(
