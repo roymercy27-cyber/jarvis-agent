@@ -15,12 +15,12 @@ from duckduckgo_search import DDGS
 async def get_current_time(context: RunContext, timezone: str = "Africa/Nairobi") -> str:
     """Get the current local time. Call this whenever the user asks for the time."""
     try:
-        # ZoneInfo looks for the 'tzdata' package in your requirements.txt
+        # ZoneInfo requires the 'tzdata' package in requirements.txt for Railway/Linux
         now = datetime.now(ZoneInfo(timezone))
         return f"It is currently {now.strftime('%I:%M %p')} in {timezone} on {now.strftime('%A, %b %d')}."
     except Exception as e:
-        # Fallback to UTC if timezone lookup fails (common in slim cloud containers)
         logging.error(f"Timezone error for {timezone}: {e}")
+        # Fallback to UTC if timezone lookup fails on the server
         now_utc = datetime.now(ZoneInfo("UTC"))
         return f"I had trouble accessing the {timezone} clock, but the current UTC time is {now_utc.strftime('%I:%M %p')}."
 
