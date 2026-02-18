@@ -9,12 +9,12 @@ from livekit.plugins import (
 )
 from livekit.plugins import google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
+# REMOVED: get_current_time from imports
 from tools import get_weather, search_web, send_email
 
 load_dotenv()
 
-# We load the VAD once at the module level for stability in containers
-# If Railway still crashes, remove the prewarm logic entirely and load inside entrypoint
+# Prewarm loads the VAD model into memory for faster session starts
 def prewarm(proc: JobProcess):
     try:
         proc.userdata["vad"] = silero.VAD.load()
@@ -26,27 +26,28 @@ class Assistant(Agent):
         super().__init__(
             instructions=AGENT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
-                voice="Charon",
+                voice="Aoede",
                 temperature=0.8,
             ),
             tools=[
                 get_weather,
                 search_web,
-                send_email,
+                send_email
+                # REMOVED: get_current_time from tool list
             ],
         )
 
 async def entrypoint(ctx: agents.JobContext):
-    # Retrieve prewarmed VAD or fallback to a fresh load to prevent crashes
+    # Retrieve prewarmed VAD or fallback to a fresh load
     vad = ctx.proc.userdata.get("vad") or silero.VAD.load()
 
     session = AgentSession(
         preemptive_generation=True,
-        min_endpointing_delay=0.1, # Set to 0.1s for stability; 0.05 can be too aggressive for cloud
+        min_endpointing_delay=0.1, 
         vad=vad
     )
 
-    # Connect to the room first
+    # Connect to the room immediately for faster join times
     await ctx.connect()
 
     await session.start(
@@ -58,7 +59,7 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    # Initial greeting to avoid "nudging"
+    # Auto-greet to provide a zero-nudge experience
     await session.generate_reply(
         instructions=SESSION_INSTRUCTION,
     )
@@ -68,5 +69,3 @@ if __name__ == "__main__":
         entrypoint_fnc=entrypoint,
         prewarm_fnc=prewarm 
     ))
-
-
