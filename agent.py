@@ -10,9 +10,8 @@ from tools import get_weather, search_web, send_email, get_time
 
 load_dotenv()
 
-# MODEL FIX: 'gemini-2.0-flash-exp' is deprecated for the Live API.
-# Use 'gemini-2.0-flash' or 'gemini-2.0-flash-live' depending on your region.
-SELECTED_MODEL = "gemini-2.0-flash" 
+# MODEL FIX: This is the most stable name for the Live/Realtime API currently
+SELECTED_MODEL = "gemini-2.0-flash-live-preview-04-09" 
 
 def prewarm(proc: JobProcess):
     from livekit.plugins import silero
@@ -55,14 +54,15 @@ async def entrypoint(ctx: JobContext):
         )
     )
 
-    # Added stabilization delay for Railway connectivity
+    # Handshake delay for mobile/Railway connectivity
     await asyncio.sleep(2) 
 
-    # SAFETY CHECK: Only try to speak if the session actually connected
-    if session.is_running:
+    # FIXED: Replaced the 'is_running' attribute error with a standard say()
+    # If the session fails, the try/except will catch it without crashing the whole process
+    try:
         await session.say(SESSION_INSTRUCTION, allow_interruptions=True)
-    else:
-        print("ERROR: Session failed to start. Check API Key permissions.")
+    except Exception as e:
+        print(f"Greeting failed: {e}")
 
     while ctx.room.connection_state == "connected":
         await asyncio.sleep(1)
