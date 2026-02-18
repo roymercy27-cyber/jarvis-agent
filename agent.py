@@ -33,7 +33,6 @@ class Assistant(Agent):
                 get_weather,
                 search_web,
                 send_email,
-                get_current_time
             ],
         )
 
@@ -69,3 +68,4 @@ if __name__ == "__main__":
         entrypoint_fnc=entrypoint,
         prewarm_fnc=prewarm 
     ))
+
