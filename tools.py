@@ -13,6 +13,7 @@ async def get_weather(context: RunContext, city: str) -> str:
     """Get the current weather for a city."""
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
+            # Using wttr.in for a simple, no-key-required weather check
             response = await client.get(f"https://wttr.in/{city}?format=%l:+%C+%t")
             return response.text.strip() if response.status_code == 200 else "Weather unavailable."
     except Exception:
@@ -23,7 +24,7 @@ async def search_web(context: RunContext, query: str) -> str:
     """Search the web for real-time info."""
     try:
         tavily = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
-        # FIXED: Added 'await' here. Without this, Jarvis sees 'coroutine' instead of results.
+        # FIXED: Must await the search response
         response = await tavily.search(query=query, search_depth="basic", max_results=2)
         
         results = "\n".join([res['content'] for res in response['results']])
@@ -33,7 +34,7 @@ async def search_web(context: RunContext, query: str) -> str:
 
 @function_tool()
 async def send_email(context: RunContext, to_email: str, subject: str, message: str) -> str:
-    """Send an email."""
+    """Send an email via Gmail SMTP."""
     try:
         gmail_user = os.getenv("GMAIL_USER")
         gmail_password = os.getenv("GMAIL_APP_PASSWORD")
@@ -45,7 +46,7 @@ async def send_email(context: RunContext, to_email: str, subject: str, message: 
             server.starttls()
             server.login(gmail_user, gmail_password)
             server.sendmail(gmail_user, [to_email], msg.as_string())
-        return f"Email sent to {to_email}."
+        return f"Email sent successfully to {to_email}."
     except Exception as e:
         return f"Email failed: {e}"
 
