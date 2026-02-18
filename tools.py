@@ -20,40 +20,37 @@ async def get_weather(context: RunContext, city: str) -> str:
 
 @function_tool()
 async def search_web(context: RunContext, query: str) -> str:
-    """Search the web for real-time info using Tavily."""
+    """Search the web for real-time info."""
     try:
-        # Using Async client to prevent blocking the agent
         tavily = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+        # FIXED: Added 'await' here. Without this, Jarvis sees 'coroutine' instead of results.
         response = await tavily.search(query=query, search_depth="basic", max_results=2)
         
         results = "\n".join([res['content'] for res in response['results']])
-        return f"Found info: {results}"
+        return f"Web Search Results: {results}"
     except Exception as e:
-        return f"Search failed: {str(e)}"
+        return f"Search error: {str(e)}"
 
 @function_tool()
 async def send_email(context: RunContext, to_email: str, subject: str, message: str) -> str:
-    """Send an email via Gmail SMTP."""
+    """Send an email."""
     try:
         gmail_user = os.getenv("GMAIL_USER")
         gmail_password = os.getenv("GMAIL_APP_PASSWORD")
-        
         msg = MIMEMultipart()
         msg['From'], msg['To'], msg['Subject'] = gmail_user, to_email, subject
         msg.attach(MIMEText(message, 'plain'))
         
-        # SMTP should be wrapped in a thread if it takes too long, 
-        # but for simple text, this is usually fine.
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.starttls()
             server.login(gmail_user, gmail_password)
             server.sendmail(gmail_user, [to_email], msg.as_string())
-        return f"Successfully sent email to {to_email}."
+        return f"Email sent to {to_email}."
     except Exception as e:
-        return f"Email error: {e}"
+        return f"Email failed: {e}"
 
 @function_tool()
 async def get_time(context: RunContext) -> str:
     """Get current time in Kenya."""
     tz = pytz.timezone("Africa/Nairobi")
-    return f"It is currently {datetime.now(tz).strftime('%I:%M %p')} in Kenya."
+    return f"The current time is {datetime.now(tz).strftime('%I:%M %p')}."
