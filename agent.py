@@ -13,7 +13,6 @@ from tools import get_weather, search_web, send_email
 
 load_dotenv()
 
-# Prewarm keeps the VAD model in RAM so it doesn't have to load from disk later
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
@@ -22,7 +21,7 @@ class Assistant(Agent):
         super().__init__(
             instructions=AGENT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
-                voice="Charon",
+                voice="Charon", # Set to Charon as requested
                 temperature=0.8,
             ),
             tools=[get_weather, search_web, send_email],
@@ -33,10 +32,12 @@ async def entrypoint(ctx: agents.JobContext):
 
     session = AgentSession(
         vad=vad,
-        preemptive_generation=True, # Starts thinking before you finish speaking
+        preemptive_generation=True,
+        # --- THE CHANGE IS HERE ---
+        # This tells Jarvis to wait for 2 seconds of silence before replying.
+        min_endpointing_delay=2.0, 
     )
 
-    # Optimization: Start the session logic BEFORE the room connection is fully established
     await session.start(
         room=ctx.room,
         agent=Assistant(),
@@ -47,8 +48,7 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    # SPEED TRICK: Run connection and the first reply greeting in PARALLEL
-    # This removes the "wait for connect" -> "wait for sleep" -> "talk" sequence.
+    # Connect and greet instantly
     await asyncio.gather(
         ctx.connect(),
         session.generate_reply(instructions=SESSION_INSTRUCTION)
