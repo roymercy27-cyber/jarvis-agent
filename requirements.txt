@@ -2,6 +2,8 @@ livekit-agents
 livekit-plugins-google
 livekit-plugins-silero
 livekit-plugins-noise-cancellation
+duckduckgo-search
 python-dotenv
 requests
-duckduckgo-search
+tzdata  <-- ADD THIS LINE
+
