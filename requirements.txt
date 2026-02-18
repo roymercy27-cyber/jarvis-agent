@@ -1,11 +1,8 @@
 livekit-agents
-livekit-plugins-openai
-livekit-plugins-silero
 livekit-plugins-google
+livekit-plugins-silero
 livekit-plugins-noise-cancellation
-mem0ai
-duckduckgo-search
-langchain_community
-requests
+tavily-python
 python-dotenv
-
+pytz
+httpx
