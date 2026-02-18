@@ -1,57 +1,112 @@
+import logging
+from livekit.agents import function_tool, RunContext
+import requests
+from langchain_community.tools import DuckDuckGoSearchRun
 import os
 import smtplib
-import httpx
-import pytz
 from email.mime.multipart import MIMEMultipart  
 from email.mime.text import MIMEText
-from datetime import datetime
-from livekit.agents import function_tool, RunContext
-from tavily import AsyncTavilyClient
+from typing import Optional
 
 @function_tool()
-async def get_weather(context: RunContext, city: str) -> str:
-    """Get the current weather for a city."""
+async def get_weather(
+    context: RunContext,  # type: ignore
+    city: str) -> str:
+    """
+    Get the current weather for a given city.
+    """
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            # Using wttr.in for a simple, no-key-required weather check
-            response = await client.get(f"https://wttr.in/{city}?format=%l:+%C+%t")
-            return response.text.strip() if response.status_code == 200 else "Weather unavailable."
-    except Exception:
-        return "Weather service timeout."
-
-@function_tool()
-async def search_web(context: RunContext, query: str) -> str:
-    """Search the web for real-time info."""
-    try:
-        tavily = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
-        # FIXED: Must await the search response
-        response = await tavily.search(query=query, search_depth="basic", max_results=2)
-        
-        results = "\n".join([res['content'] for res in response['results']])
-        return f"Web Search Results: {results}"
+        response = requests.get(
+            f"https://wttr.in/{city}?format=3")
+        if response.status_code == 200:
+            logging.info(f"Weather for {city}: {response.text.strip()}")
+            return response.text.strip()   
+        else:
+            logging.error(f"Failed to get weather for {city}: {response.status_code}")
+            return f"Could not retrieve weather for {city}."
     except Exception as e:
-        return f"Search error: {str(e)}"
+        logging.error(f"Error retrieving weather for {city}: {e}")
+        return f"An error occurred while retrieving weather for {city}." 
 
 @function_tool()
-async def send_email(context: RunContext, to_email: str, subject: str, message: str) -> str:
-    """Send an email via Gmail SMTP."""
+async def search_web(
+    context: RunContext,  # type: ignore
+    query: str) -> str:
+    """
+    Search the web using DuckDuckGo.
+    """
     try:
+        results = DuckDuckGoSearchRun().run(tool_input=query)
+        logging.info(f"Search results for '{query}': {results}")
+        return results
+    except Exception as e:
+        logging.error(f"Error searching the web for '{query}': {e}")
+        return f"An error occurred while searching the web for '{query}'."    
+
+@function_tool()    
+async def send_email(
+    context: RunContext,  # type: ignore
+    to_email: str,
+    subject: str,
+    message: str,
+    cc_email: Optional[str] = None
+) -> str:
+    """
+    Send an email through Gmail.
+    
+    Args:
+        to_email: Recipient email address
+        subject: Email subject line
+        message: Email body content
+        cc_email: Optional CC email address
+    """
+    try:
+        # Gmail SMTP configuration
+        smtp_server = "smtp.gmail.com"
+        smtp_port = 587
+        
+        # Get credentials from environment variables
         gmail_user = os.getenv("GMAIL_USER")
-        gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+        gmail_password = os.getenv("GMAIL_APP_PASSWORD")  # Use App Password, not regular password
+        
+        if not gmail_user or not gmail_password:
+            logging.error("Gmail credentials not found in environment variables")
+            return "Email sending failed: Gmail credentials not configured."
+        
+        # Create message
         msg = MIMEMultipart()
-        msg['From'], msg['To'], msg['Subject'] = gmail_user, to_email, subject
+        msg['From'] = gmail_user
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        
+        # Add CC if provided
+        recipients = [to_email]
+        if cc_email:
+            msg['Cc'] = cc_email
+            recipients.append(cc_email)
+        
+        # Attach message body
         msg.attach(MIMEText(message, 'plain'))
         
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(gmail_user, gmail_password)
-            server.sendmail(gmail_user, [to_email], msg.as_string())
-        return f"Email sent successfully to {to_email}."
+        # Connect to Gmail SMTP server
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()  # Enable TLS encryption
+        server.login(gmail_user, gmail_password)
+        
+        # Send email
+        text = msg.as_string()
+        server.sendmail(gmail_user, recipients, text)
+        server.quit()
+        
+        logging.info(f"Email sent successfully to {to_email}")
+        return f"Email sent successfully to {to_email}"
+        
+    except smtplib.SMTPAuthenticationError:
+        logging.error("Gmail authentication failed")
+        return "Email sending failed: Authentication error. Please check your Gmail credentials."
+    except smtplib.SMTPException as e:
+        logging.error(f"SMTP error occurred: {e}")
+        return f"Email sending failed: SMTP error - {str(e)}"
     except Exception as e:
-        return f"Email failed: {e}"
-
-@function_tool()
-async def get_time(context: RunContext) -> str:
-    """Get current time in Kenya."""
-    tz = pytz.timezone("Africa/Nairobi")
-    return f"The current time is {datetime.now(tz).strftime('%I:%M %p')}."
+        logging.error(f"Error sending email: {e}")
+        return f"An error occurred while sending email: {str(e)}"
