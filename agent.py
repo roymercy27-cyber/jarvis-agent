@@ -1,21 +1,19 @@
-from dotenv import load_dotenv
 import asyncio
+from dotenv import load_dotenv
 
 from livekit import agents
-from livekit.agents import AgentSession, Agent, RoomInputOptions, WorkerOptions, JobProcess
+from livekit.agents import AgentSession, Agent, room_io, JobProcess, WorkerOptions
 from livekit.plugins import (
     noise_cancellation,
+    google,
     silero,
 )
-from livekit.plugins import google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
-# Ensure get_current_time is imported from tools
-from tools import get_weather, search_web, send_email, get_current_time
+from tools import get_weather, search_web, send_email
 
 load_dotenv()
 
 def prewarm(proc: JobProcess):
-    """Prewarm VAD to reduce initial connection latency."""
     proc.userdata["vad"] = silero.VAD.load()
 
 class Assistant(Agent):
@@ -23,46 +21,44 @@ class Assistant(Agent):
         super().__init__(
             instructions=AGENT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
-                voice="Charon",
+                voice="Charon", # Set to Charon as requested
                 temperature=0.8,
             ),
-            tools=[
-                get_weather,
-                search_web,
-                send_email,
-                get_current_time # Registering the time tool here
-            ],
+            tools=[get_weather, search_web, send_email],
         )
 
 async def entrypoint(ctx: agents.JobContext):
-    # Retrieve prewarmed VAD or fallback
-    vad = ctx.proc.userdata.get("vad") or silero.VAD.load()
+    vad = ctx.proc.userdata["vad"]
 
     session = AgentSession(
+        vad=vad,
         preemptive_generation=True,
-        min_endpointing_delay=0.1,
-        vad=vad
+        # --- THE CHANGE IS HERE ---
+        # This tells Jarvis to wait for 2 seconds of silence before replying.
+        min_endpointing_delay=2.0, 
     )
-
-    # FIX: Connect to the room FIRST so Jarvis is present before speaking
-    await ctx.connect()
 
     await session.start(
         room=ctx.room,
         agent=Assistant(),
-        room_input_options=RoomInputOptions(
-            video_enabled=True,
-            noise_cancellation=noise_cancellation.BVC(),
+        room_options=room_io.RoomOptions(
+            audio_input=room_io.AudioInputOptions(
+                noise_cancellation=noise_cancellation.BVC(),
+            ),
         ),
     )
 
-    # FIX: Immediate greeting avoids the need for a 'nudge'
-    await session.generate_reply(
-        instructions=SESSION_INSTRUCTION,
+    # Connect and greet instantly
+    await asyncio.gather(
+        ctx.connect(),
+        session.generate_reply(instructions=SESSION_INSTRUCTION)
     )
+
+    while ctx.room.connection_state == "connected":
+        await asyncio.sleep(1)
 
 if __name__ == "__main__":
     agents.cli.run_app(WorkerOptions(
         entrypoint_fnc=entrypoint,
-        prewarm_fnc=prewarm
+        prewarm_fnc=prewarm 
     ))
