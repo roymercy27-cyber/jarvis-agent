@@ -2,7 +2,6 @@ livekit-agents
 livekit-plugins-google
 livekit-plugins-silero
 livekit-plugins-noise-cancellation
-tavily-python
 python-dotenv
-pytz
-httpx
+requests
+duckduckgo-search
