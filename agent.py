@@ -9,12 +9,13 @@ from livekit.plugins import (
 )
 from livekit.plugins import google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
+# Ensure get_current_time is imported from tools
 from tools import get_weather, search_web, send_email, get_current_time
 
 load_dotenv()
 
 def prewarm(proc: JobProcess):
-    """Prewarm VAD to reduce initial latency."""
+    """Prewarm VAD to reduce initial connection latency."""
     proc.userdata["vad"] = silero.VAD.load()
 
 class Assistant(Agent):
@@ -22,19 +23,19 @@ class Assistant(Agent):
         super().__init__(
             instructions=AGENT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
-                voice="Aoede",
+                voice="Charon",
                 temperature=0.8,
             ),
             tools=[
                 get_weather,
                 search_web,
                 send_email,
-                get_current_time
+                get_current_time # Registering the time tool here
             ],
         )
 
 async def entrypoint(ctx: agents.JobContext):
-    # Retrieve prewarmed VAD
+    # Retrieve prewarmed VAD or fallback
     vad = ctx.proc.userdata.get("vad") or silero.VAD.load()
 
     session = AgentSession(
@@ -43,7 +44,7 @@ async def entrypoint(ctx: agents.JobContext):
         vad=vad
     )
 
-    # CONNECT FIRST: Ensure Jarvis is in the room before starting logic
+    # FIX: Connect to the room FIRST so Jarvis is present before speaking
     await ctx.connect()
 
     await session.start(
@@ -55,7 +56,7 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    # PROACTIVE GREETING: Jarvis speaks first automatically
+    # FIX: Immediate greeting avoids the need for a 'nudge'
     await session.generate_reply(
         instructions=SESSION_INSTRUCTION,
     )
