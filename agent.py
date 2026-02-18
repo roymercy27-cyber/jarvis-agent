@@ -19,7 +19,7 @@ class Assistant(Agent):
         super().__init__(
             instructions=AGENT_INSTRUCTION,
             llm=beta.realtime.RealtimeModel(
-                model="gemini-2.0-flash-exp", # Correct for AI Studio
+                model="gemini-2.0-flash-exp", 
                 voice="Charon",
                 temperature=0.6,
             ),
@@ -27,13 +27,13 @@ class Assistant(Agent):
         )
 
 async def entrypoint(ctx: JobContext):
-    # Ensure we connect to the room before initializing logic
     await ctx.connect()
     print(f"--- Protocol Initiated: {ctx.room.name} ---")
     
     from livekit.plugins import silero
     vad = ctx.proc.userdata.get("vad") or silero.VAD.load()
 
+    # Optimized session for Realtime Gemini
     session = AgentSession(
         llm=beta.realtime.RealtimeModel(
             model="gemini-2.0-flash-exp",
@@ -44,7 +44,6 @@ async def entrypoint(ctx: JobContext):
         preemptive_generation=True
     )
 
-    # Start session with room_options instead of room_input_options for latest SDK compatibility
     await session.start(
         room=ctx.room,
         agent=Assistant(),
@@ -53,11 +52,11 @@ async def entrypoint(ctx: JobContext):
         )
     )
 
-    # FIX: Mobile clients often need an explicit 'say' to open the audio stream
-    # This ensures Jarvis speaks the moment you open the app.
+    # --- CRITICAL FIX FOR MOBILE SILENCE ---
+    # We wait for the network to stabilize before greeting.
+    await asyncio.sleep(1.5) 
     await session.say(SESSION_INSTRUCTION, allow_interruptions=True)
 
-    # Keep the agent alive
     while ctx.room.connection_state == "connected":
         await asyncio.sleep(1)
 
