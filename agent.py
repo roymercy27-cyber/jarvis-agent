@@ -13,9 +13,7 @@ from tools import get_weather, search_web, send_email
 
 load_dotenv()
 
-# --- OPTIMIZATION: PREWARM THE VAD ---
-# This loads the AI model into memory once when the script starts,
-# instead of loading it every time a new person joins.
+# Prewarm keeps the VAD model in RAM so it doesn't have to load from disk later
 def prewarm(proc: JobProcess):
     proc.userdata["vad"] = silero.VAD.load()
 
@@ -31,14 +29,14 @@ class Assistant(Agent):
         )
 
 async def entrypoint(ctx: agents.JobContext):
-    # Retrieve the already-loaded VAD from memory
     vad = ctx.proc.userdata["vad"]
 
     session = AgentSession(
         vad=vad,
-        preemptive_generation=True,
+        preemptive_generation=True, # Starts thinking before you finish speaking
     )
 
+    # Optimization: Start the session logic BEFORE the room connection is fully established
     await session.start(
         room=ctx.room,
         agent=Assistant(),
@@ -49,19 +47,17 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    # Parallelize the connection and the first reply
-    await ctx.connect()
-    
-    # Reduced sleep: 0.5s is usually enough once VAD is pre-loaded
-    await asyncio.sleep(0.5)
-
-    await session.generate_reply(instructions=SESSION_INSTRUCTION)
+    # SPEED TRICK: Run connection and the first reply greeting in PARALLEL
+    # This removes the "wait for connect" -> "wait for sleep" -> "talk" sequence.
+    await asyncio.gather(
+        ctx.connect(),
+        session.generate_reply(instructions=SESSION_INSTRUCTION)
+    )
 
     while ctx.room.connection_state == "connected":
         await asyncio.sleep(1)
 
 if __name__ == "__main__":
-    # Updated to include prewarm_fnc
     agents.cli.run_app(WorkerOptions(
         entrypoint_fnc=entrypoint,
         prewarm_fnc=prewarm 
