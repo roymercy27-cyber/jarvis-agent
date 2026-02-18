@@ -5,6 +5,4 @@ livekit-plugins-noise-cancellation
 duckduckgo-search
 python-dotenv
 requests
-tzdata 
-
-
+tzdata
