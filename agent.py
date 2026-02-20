@@ -1,13 +1,12 @@
 from dotenv import load_dotenv
 
 from livekit import agents
-from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, JobProcess # Added JobProcess
+from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext
 from livekit.plugins import (
     noise_cancellation,
-    openai,
-    silero, # Added silero for VAD prewarming
-    google
+    openai
 )
+from livekit.plugins import google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
 from tools import get_weather, search_web, send_email
 from mem0 import AsyncMemoryClient
@@ -18,9 +17,6 @@ import json
 import logging
 load_dotenv()
 
-# --- PREWARM FUNCTION ---
-def prewarm(proc: JobProcess):
-    proc.userdata["vad"] = silero.VAD.load()
 
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
@@ -69,7 +65,7 @@ async def entrypoint(ctx: agents.JobContext):
 
 
     session = AgentSession(
-        vad=ctx.proc.userdata["vad"] # Use the prewarmed VAD
+        
     )
 
     
@@ -128,7 +124,4 @@ async def entrypoint(ctx: agents.JobContext):
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
 
 if __name__ == "__main__":
-    agents.cli.run_app(agents.WorkerOptions(
-        entrypoint_fnc=entrypoint,
-        prewarm_fnc=prewarm # Register the prewarm function
-    ))
+    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
