@@ -1,11 +1,10 @@
 from dotenv import load_dotenv
-
 from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, JobProcess, llm
 from livekit.plugins import (
     noise_cancellation,
     openai,
-    silero, # Added for prewarm
+    silero, 
     google
 )
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
@@ -16,11 +15,10 @@ from mcp_client.agent_tools import MCPToolsIntegration
 import os
 import json
 import logging
+
 load_dotenv()
 
-# --- PREWARM LOGIC ---
 def prewarm(proc: JobProcess):
-    # Pre-loads the VAD model into memory so the agent joins instantly
     proc.userdata["vad"] = silero.VAD.load()
 
 class Assistant(Agent):
@@ -28,33 +26,31 @@ class Assistant(Agent):
         super().__init__(
             instructions=AGENT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
-                 voice="Charon"
+                 voice="Charon",
+                 temperature=0.8 # Added temperature here
             ),
-            vad=vad, # Pass prewarmed VAD to the agent
-            tools=[
-                get_weather,
-                search_web,
-                send_email
-            ],
+            vad=vad,
+            tools=[get_weather, search_web, send_email],
             chat_ctx=chat_ctx
         )
-        
 
 async def entrypoint(ctx: agents.JobContext):
-    # Retrieve prewarmed VAD from process memory
     prewarmed_vad = ctx.proc.userdata["vad"]
+    user_name = 'Ivan' # Syncing all IDs to Ivan
+    mem0 = AsyncMemoryClient()
 
-    async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
-        logging.info("Shutting down, saving chat context to memory...")
+    async def shutdown_hook(chat_ctx: ChatContext, mem_client: AsyncMemoryClient, memory_str: str):
+        logging.info("Shutting down, saving context...")
         messages_formatted = []
 
         for item in chat_ctx.items:
-            # --- FIX: Only process ChatMessages (skips AgentConfigUpdate) ---
+            # FIX: Only save actual chat messages, skip config updates
             if not isinstance(item, llm.ChatMessage):
                 continue
 
             content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
 
+            # Don't save the memory facts back into the memory (prevents duplicates)
             if memory_str and memory_str in content_str:
                 continue
 
@@ -65,35 +61,23 @@ async def entrypoint(ctx: agents.JobContext):
                 })
 
         if messages_formatted:
-            # Synced user_id to "Ivan" to match your retrieval logic
-            await mem0.add(messages_formatted, user_id="Ivan")
-            logging.info("Chat context saved to memory.")
+            await mem_client.add(messages_formatted, user_id=user_name)
+            logging.info(f"Context saved for {user_name}.")
 
-
-    # Initialize session with prewarmed VAD
-    session = AgentSession(vad=prewarmed_vad)
-
-    mem0 = AsyncMemoryClient()
-    user_name = 'Ivan'
-
-    results = await mem0.get_all(user_id=user_name)
+    # 1. Fetch EVERYTHING relevant
+    # We use search with a broad query to get the most relevant facts first
+    results = await mem0.search(f"What should I know about {user_name}?", user_id=user_name)
+    
     initial_ctx = ChatContext()
     memory_str = ''
 
     if results:
-        memories = [
-            {
-                "memory": result["memory"],
-                "updated_at": result["updated_at"]
-            }
-            for result in results
-        ]
+        memories = [{"memory": r["memory"], "updated_at": r.get("updated_at")} for r in results]
         memory_str = json.dumps(memories)
-        logging.info(f"Memories: {memory_str}")
-        # Injecting as system role makes the memory "stick" better than assistant role
+        # 2. Inject as SYSTEM role so the AI treats it as factual background
         initial_ctx.add_message(
             role="system",
-            content=f"The user's name is {user_name}, and this is relvant context about him: {memory_str}."
+            content=f"FACTS ABOUT THE USER ({user_name}): {memory_str}"
         )
 
     mcp_server = MCPServerSse(
@@ -102,13 +86,13 @@ async def entrypoint(ctx: agents.JobContext):
         name="SSE MCP Server"
     )
 
-    # Pass VAD into the agent creation
     agent = await MCPToolsIntegration.create_agent_with_tools(
         agent_class=Assistant, 
         agent_kwargs={"chat_ctx": initial_ctx, "vad": prewarmed_vad},
         mcp_servers=[mcp_server]
     )
 
+    session = AgentSession(vad=prewarmed_vad)
     await session.start(
         room=ctx.room,
         agent=agent,
@@ -119,16 +103,13 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     await ctx.connect()
-
-    await session.generate_reply(
-        instructions=SESSION_INSTRUCTION,
-    )
-
-    # Fixed: Use agent.chat_ctx to ensure we capture the full conversation
+    await session.generate_reply(instructions=SESSION_INSTRUCTION)
+    
+    # Use agent.chat_ctx to ensure we get the full updated history
     ctx.add_shutdown_callback(lambda: shutdown_hook(agent.chat_ctx, mem0, memory_str))
 
 if __name__ == "__main__":
     agents.cli.run_app(agents.WorkerOptions(
         entrypoint_fnc=entrypoint,
-        prewarm_fnc=prewarm # Registered prewarm
+        prewarm_fnc=prewarm
     ))
