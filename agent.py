@@ -1,12 +1,13 @@
+import asyncio 
 from dotenv import load_dotenv
+
 from livekit import agents
-from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, JobProcess, llm
+from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import (
     noise_cancellation,
-    openai,
-    silero, 
-    google
+    openai
 )
+from livekit.plugins import google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
 from tools import get_weather, search_web, send_email
 from mem0 import AsyncMemoryClient
@@ -15,42 +16,40 @@ from mcp_client.agent_tools import MCPToolsIntegration
 import os
 import json
 import logging
-
 load_dotenv()
 
-def prewarm(proc: JobProcess):
-    proc.userdata["vad"] = silero.VAD.load()
 
 class Assistant(Agent):
-    def __init__(self, chat_ctx=None, vad=None) -> None:
+    def __init__(self, chat_ctx=None) -> None:
         super().__init__(
             instructions=AGENT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
-                 temperature=0.8 # Added temperature here
+                 temperature=0.8,
             ),
-            vad=vad,
-            tools=[get_weather, search_web, send_email],
+            tools=[
+                get_weather,
+                search_web,
+                send_email
+            ],
             chat_ctx=chat_ctx
         )
+        
 
 async def entrypoint(ctx: agents.JobContext):
-    prewarmed_vad = ctx.proc.userdata["vad"]
-    user_name = 'Ivan' # Syncing all IDs to Ivan
-    mem0 = AsyncMemoryClient()
 
-    async def shutdown_hook(chat_ctx: ChatContext, mem_client: AsyncMemoryClient, memory_str: str):
-        logging.info("Shutting down, saving context...")
+    async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
+        logging.info("Shutting down, saving chat context to memory...")
+
         messages_formatted = []
 
         for item in chat_ctx.items:
-            # FIX: Only save actual chat messages, skip config updates
             if not isinstance(item, llm.ChatMessage):
                 continue
-
+            
             content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
 
-            # Don't save the memory facts back into the memory (prevents duplicates)
+            # Avoid re-saving the initial memories we pulled at start
             if memory_str and memory_str in content_str:
                 continue
 
@@ -61,23 +60,41 @@ async def entrypoint(ctx: agents.JobContext):
                 })
 
         if messages_formatted:
-            await mem_client.add(messages_formatted, user_id=user_name)
-            logging.info(f"Context saved for {user_name}.")
+            logging.info(f"Sending {len(messages_formatted)} messages to Mem0 for Ivan...")
+            try:
+                # Actual hand-off to Mem0
+                await mem0.add(messages_formatted, user_id="Ivan")
+                logging.info("Chat context successfully handed off to Mem0.")
+            except Exception as e:
+                logging.error(f"Failed to save to Mem0: {e}")
+            
+            # --- NATURAL SAVING DELAY ---
+            # Increased to 3 seconds to ensure Mem0 finishes processing the batch
+            await asyncio.sleep(3) 
+            # ----------------------------
 
-    # 1. Fetch EVERYTHING relevant
-    # We use search with a broad query to get the most relevant facts first
-    results = await mem0.search(f"What should I know about {user_name}?", user_id=user_name)
-    
+    session = AgentSession()
+    mem0 = AsyncMemoryClient()
+    user_name = 'Ivan'
+
+    # Load existing memories
+    results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
     memory_str = ''
 
     if results:
-        memories = [{"memory": r["memory"], "updated_at": r.get("updated_at")} for r in results]
+        memories = [
+            {
+                "memory": result["memory"],
+                "updated_at": result["updated_at"]
+            }
+            for result in results
+        ]
         memory_str = json.dumps(memories)
-        # 2. Inject as SYSTEM role so the AI treats it as factual background
+        logging.info(f"Memories: {memory_str}")
         initial_ctx.add_message(
-            role="system",
-            content=f"FACTS ABOUT THE USER ({user_name}): {memory_str}"
+            role="assistant",
+            content=f"The user's name is {user_name}, and this is relvant context about him: {memory_str}."
         )
 
     mcp_server = MCPServerSse(
@@ -87,12 +104,10 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     agent = await MCPToolsIntegration.create_agent_with_tools(
-        agent_class=Assistant, 
-        agent_kwargs={"chat_ctx": initial_ctx, "vad": prewarmed_vad},
+        agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx},
         mcp_servers=[mcp_server]
     )
 
-    session = AgentSession(vad=prewarmed_vad)
     await session.start(
         room=ctx.room,
         agent=agent,
@@ -103,13 +118,13 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     await ctx.connect()
-    await session.generate_reply(instructions=SESSION_INSTRUCTION)
-    
-    # Use agent.chat_ctx to ensure we get the full updated history
-    ctx.add_shutdown_callback(lambda: shutdown_hook(agent.chat_ctx, mem0, memory_str))
+
+    await session.generate_reply(
+        instructions=SESSION_INSTRUCTION,
+    )
+
+    # Register the hook with all necessary state
+    ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
 
 if __name__ == "__main__":
-    agents.cli.run_app(agents.WorkerOptions(
-        entrypoint_fnc=entrypoint,
-        prewarm_fnc=prewarm
-    ))
+    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
