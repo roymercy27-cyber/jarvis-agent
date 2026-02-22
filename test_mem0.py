@@ -1,3 +1,4 @@
+
 from dotenv import load_dotenv
 from mem0 import MemoryClient
 import logging
@@ -28,7 +29,7 @@ def add_memory():
         },
     ]
 
-    mem0.add(messages_formatted, user_id="Ivan")
+    mem0.add(messages_formatted, user_id="David")
 
 def get_memory_by_query():
     mem0 = MemoryClient()
