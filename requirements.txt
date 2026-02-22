@@ -4,7 +4,7 @@ livekit-plugins-silero
 livekit-plugins-google
 livekit-plugins-noise-cancellation
 mem0ai
-duckduckgo-search
+duckduckgo-search>=6.0.0
 langchain_community
 requests
 python-dotenv
