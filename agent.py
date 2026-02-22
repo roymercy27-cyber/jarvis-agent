@@ -9,6 +9,7 @@ from livekit.plugins import (
 )
 from livekit.plugins import google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
+# Note: 'search_web' remains the same name but now uses Tavily in tool.py
 from tools import get_weather, search_web, send_email
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
