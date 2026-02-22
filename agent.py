@@ -25,7 +25,7 @@ class Assistant(Agent):
             instructions=AGENT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
-                 temperature=0.8,
+                 temperature=0.7,
             ),
             tools=[
                 get_weather,
@@ -128,3 +128,4 @@ async def entrypoint(ctx: agents.JobContext):
 
 if __name__ == "__main__":
     agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
+
