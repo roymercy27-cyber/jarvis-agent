@@ -1,83 +1,127 @@
-import logging
+from dotenv import load_dotenv
+
+from livekit import agents
+from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext
+from livekit.plugins import (
+    noise_cancellation,
+    openai
+)
+from livekit.plugins import google
+from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
+from tools import get_weather, search_web, send_email
+from mem0 import AsyncMemoryClient
+from mcp_client import MCPServerSse
+from mcp_client.agent_tools import MCPToolsIntegration
 import os
-import requests
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from typing import Optional
-from livekit.agents import function_tool, RunContext
-# NEW: Import Tavily
-from tavily import AsyncTavilyClient
+import json
+import logging
+load_dotenv()
 
-# Initialize Tavily Client
-tavily_client = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
-@function_tool()
-async def get_weather(
-    context: RunContext, 
-    city: str) -> str:
-    """Get the current weather for a given city."""
-    try:
-        response = requests.get(f"https://wttr.in/{city}?format=3")
-        if response.status_code == 200:
-            return response.text.strip()
-        return f"Could not retrieve weather for {city}."
-    except Exception as e:
-        return f"Error retrieving weather: {e}"
+class Assistant(Agent):
+    def __init__(self, chat_ctx=None) -> None:
+        super().__init__(
+            instructions=AGENT_INSTRUCTION,
+            llm=openai.realtime.RealtimeModel(
+                 voice="sage"
+             
+            ),
+            tools=[
+                get_weather,
+                search_web,
+                send_email
+            ],
+            chat_ctx=chat_ctx
 
-@function_tool()
-async def search_web(
-    context: RunContext, 
-    query: str) -> str:
-    """
-    Search the web for real-time information, news, and stock prices using Tavily.
-    """
-    try:
-        # Using Tavily for high-quality AI-ready results
-        # We use 'advanced' depth to ensure we get live data like stock prices
-        response = await tavily_client.search(query, search_depth="advanced", max_results=5)
-        results = response.get("results", [])
+        )
         
-        if not results:
-            return f"I couldn't find any recent information for '{query}'."
-            
-        formatted_results = "\n".join([f"- {r['content']} (Source: {r['url']})" for r in results])
-        logging.info(f"Tavily search successful for: {query}")
-        return f"Here is the latest information I found:\n{formatted_results}"
-    except Exception as e:
-        logging.error(f"Tavily search error: {e}")
-        return f"An error occurred while searching the web: {str(e)}"
 
-@function_tool()
-async def send_email(
-    context: RunContext,
-    to_email: str,
-    subject: str,
-    message: str,
-    cc_email: Optional[str] = None
-) -> str:
-    """Send an email through Gmail."""
-    try:
-        smtp_server = "smtp.gmail.com"
-        smtp_port = 587
-        gmail_user = os.getenv("GMAIL_USER")
-        gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+
+async def entrypoint(ctx: agents.JobContext):
+
+    async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
+        logging.info("Shutting down, saving chat context to memory...")
+
+        messages_formatted = [
+        ]
+
+        logging.info(f"Chat context messages: {chat_ctx.items}")
+
+        for item in chat_ctx.items:
+            content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
+
+            if memory_str and memory_str in content_str:
+                continue
+
+            if item.role in ['user', 'assistant']:
+                messages_formatted.append({
+                    "role": item.role,
+                    "content": content_str.strip()
+                })
+
+        logging.info(f"Formatted messages to add to memory: {messages_formatted}")
+        await mem0.add(messages_formatted, user_id="David")
+        logging.info("Chat context saved to memory.")
+
+
+    session = AgentSession(
         
-        if not gmail_user or not gmail_password:
-            return "Email failed: Credentials not configured."
-        
-        msg = MIMEMultipart()
-        msg['From'] = gmail_user
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        if cc_email: msg['Cc'] = cc_email
-        msg.attach(MIMEText(message, 'plain'))
-        
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-        server.login(gmail_user, gmail_password)
-        server.sendmail(gmail_user, [to_email] + ([cc_email] if cc_email else []), msg.as_string())
-        server.quit()
-        return f"Email sent successfully to {to_email}"
-    except Exception as e:
-        return f"Error sending email: {e}"
+    )
+
+    
+
+    mem0 = AsyncMemoryClient()
+    user_name = 'David'
+
+    results = await mem0.get_all(user_id=user_name)
+    initial_ctx = ChatContext()
+    memory_str = ''
+
+    if results:
+        memories = [
+            {
+                "memory": result["memory"],
+                "updated_at": result["updated_at"]
+            }
+            for result in results
+        ]
+        memory_str = json.dumps(memories)
+        logging.info(f"Memories: {memory_str}")
+        initial_ctx.add_message(
+            role="assistant",
+            content=f"The user's name is {user_name}, and this is relvant context about him: {memory_str}."
+        )
+
+    mcp_server = MCPServerSse(
+        params={"url": os.environ.get("N8N_MCP_SERVER_URL")},
+        cache_tools_list=True,
+        name="SSE MCP Server"
+    )
+
+    agent = await MCPToolsIntegration.create_agent_with_tools(
+        agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx},
+        mcp_servers=[mcp_server]
+    )
+
+    await session.start(
+        room=ctx.room,
+        agent=agent,
+        room_input_options=RoomInputOptions(
+            # LiveKit Cloud enhanced noise cancellation
+            # - If self-hosting, omit this parameter
+            # - For telephony applications, use `BVCTelephony` for best results
+            video_enabled=True,
+            noise_cancellation=noise_cancellation.BVC(),
+        ),
+    )
+
+    await ctx.connect()
+
+    await session.generate_reply(
+        instructions=SESSION_INSTRUCTION,
+    )
+
+    ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
+
+if __name__ == "__main__":
+    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
