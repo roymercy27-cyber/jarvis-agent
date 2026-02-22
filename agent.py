@@ -9,7 +9,6 @@ from livekit.plugins import (
 )
 from livekit.plugins import google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
-# Note: 'search_web' remains the same name but now uses Tavily in tool.py
 from tools import get_weather, search_web, send_email
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
@@ -21,7 +20,6 @@ load_dotenv()
 
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
-        # TIGHTENED PROTOCOL: Forces immediate tool execution without "chatter" first.
         DIRECT_ACTION_INSTRUCTION = f"""
         {AGENT_INSTRUCTION}
 
@@ -38,7 +36,7 @@ class Assistant(Agent):
             instructions=DIRECT_ACTION_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
-                 temperature=0.7, # Slightly lower temperature for more precise tool use
+                 temperature=0.7,
             ),
             tools=[
                 get_weather,
@@ -49,6 +47,10 @@ class Assistant(Agent):
         )
 
 async def entrypoint(ctx: agents.JobContext):
+    # 1. Connect to the room FIRST
+    # This registers the agent's presence so LiveKit knows it's ready.
+    logging.info(f"Connecting to room: {ctx.room.name}")
+    await ctx.connect()
 
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
         logging.info("Shutting down, saving chat context to memory...")
@@ -102,6 +104,7 @@ async def entrypoint(ctx: agents.JobContext):
         mcp_servers=[mcp_server]
     )
 
+    # 2. Start the session AFTER connecting
     await session.start(
         room=ctx.room,
         agent=agent,
@@ -111,9 +114,7 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    await ctx.connect()
-
-    # This ensures Jarvis starts the conversation with the info ready to go.
+    # 3. Greet the user
     await session.generate_reply(
         instructions=f"{SESSION_INSTRUCTION}\nBriefly greet Ivan and give him the current time and weather update immediately without being asked.",
     )
