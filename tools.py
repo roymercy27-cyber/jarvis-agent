@@ -9,7 +9,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
-# Initialize Tavily Client
+# Initialize Tavily Client (ensure TAVILY_API_KEY is in your .env)
 tavily_client = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
 @function_tool()
@@ -37,22 +37,32 @@ async def search_web(
     context: RunContext,  # type: ignore
     query: str) -> str:
     """
-    Search the web for up-to-date information.
+    Search the web for real-time information, including stock prices, news, and time.
     """
     try:
-        # Optimized for AI: returns structured snippets
-        response = await tavily_client.search(query, search_depth="basic", max_results=5)
-        results = response.get("results", [])
+        # Optimization: Use 'advanced' depth for financial/time-sensitive queries
+        is_finance = any(word in query.lower() for word in ["stock", "price", "tesla", "market", "tsla"])
+        search_depth = "advanced" if is_finance else "basic"
         
+        response = await tavily_client.search(
+            query, 
+            search_depth=search_depth, 
+            max_results=5,
+            topic="finance" if is_finance else "general"
+        )
+        
+        results = response.get("results", [])
         if not results:
-            return f"I'm sorry, sir, but I couldn't find any relevant information for '{query}'."
-            
-        formatted_results = "\n".join([f"- {r['title']}: {r['content']} (Source: {r['url']})" for r in results])
-        logging.info(f"Tavily search results for '{query}': {len(results)} sources found.")
-        return formatted_results
+            return f"I'm sorry, sir, but I couldn't find any live information regarding '{query}'."
+
+        # Format results for the LLM to process
+        formatted_results = "\n".join([f"- {r['content']} (Source: {r['url']})" for r in results])
+        logging.info(f"Tavily {search_depth} search successful for: {query}")
+        
+        return f"Sir, I have found the following up-to-date information:\n{formatted_results}"
     except Exception as e:
         logging.error(f"Error searching Tavily for '{query}': {e}")
-        return f"An error occurred while searching the web for '{query}'."    
+        return f"I apologize, sir, but an error occurred while searching the web: {str(e)}"
 
 @function_tool()     
 async def send_email(
@@ -72,8 +82,7 @@ async def send_email(
         gmail_password = os.getenv("GMAIL_APP_PASSWORD") 
         
         if not gmail_user or not gmail_password:
-            logging.error("Gmail credentials not found")
-            return "Email sending failed: Credentials not configured."
+            return "Email sending failed: Gmail credentials not configured."
         
         msg = MIMEMultipart()
         msg['From'] = gmail_user
@@ -97,7 +106,6 @@ async def send_email(
         
         logging.info(f"Email sent successfully to {to_email}")
         return f"Email sent successfully to {to_email}"
-        
     except Exception as e:
         logging.error(f"Error sending email: {e}")
         return f"An error occurred while sending email: {str(e)}"
