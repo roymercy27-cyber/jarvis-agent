@@ -16,6 +16,7 @@ from mcp_client.agent_tools import MCPToolsIntegration
 import os
 import json
 import logging
+
 load_dotenv()
 
 class Assistant(Agent):
@@ -37,7 +38,7 @@ class Assistant(Agent):
             instructions=DIRECT_ACTION_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
-                 temperature=0.7, # Slightly lower temperature for more precise tool use
+                 temperature=0.7, 
             ),
             tools=[
                 get_weather,
@@ -48,6 +49,11 @@ class Assistant(Agent):
         )
 
 async def entrypoint(ctx: agents.JobContext):
+    # --- SPEED FIX: CONNECT FIRST ---
+    # Registering with the room immediately makes the agent appear in Sandbox 
+    # while the rest of the setup runs in the background.
+    await ctx.connect()
+    logging.info("Agent connected to room instantly.")
 
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
         logging.info("Shutting down, saving chat context to memory...")
@@ -69,12 +75,14 @@ async def entrypoint(ctx: agents.JobContext):
                 logging.info("Chat context saved to Mem0.")
             except Exception as e:
                 logging.error(f"Failed to save to Mem0: {e}")
-            await asyncio.sleep(3) 
+            await asyncio.sleep(2) 
 
+    # Background Setup
     session = AgentSession()
     mem0 = AsyncMemoryClient()
     user_name = 'Ivan'
 
+    # Retrieve memories and prepare context
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
     memory_str = ''
@@ -87,20 +95,23 @@ async def entrypoint(ctx: agents.JobContext):
         memory_str = json.dumps(memories)
         initial_ctx.add_message(
             role="assistant",
-            content=f"User: {user_name}. Memories: {memory_str}. Important: Use tools immediately when asked."
+            content=f"User: {user_name}. Memories: {memory_str}. Important: Use tools immediately."
         )
 
+    # Initialize MCP Server
     mcp_server = MCPServerSse(
         params={"url": os.environ.get("N8N_MCP_SERVER_URL")},
         cache_tools_list=True,
         name="SSE MCP Server"
     )
 
+    # Integrate tools
     agent = await MCPToolsIntegration.create_agent_with_tools(
         agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx},
         mcp_servers=[mcp_server]
     )
 
+    # Start the actual voice session
     await session.start(
         room=ctx.room,
         agent=agent,
@@ -110,9 +121,7 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    await ctx.connect()
-
-    # This ensures Jarvis starts the conversation with the info ready to go.
+    # Jarvis greets Ivan once the setup is complete
     await session.generate_reply(
         instructions=f"{SESSION_INSTRUCTION}\nBriefly greet Ivan and give him the current time and weather update immediately without being asked.",
     )
@@ -120,4 +129,9 @@ async def entrypoint(ctx: agents.JobContext):
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
 
 if __name__ == "__main__":
-    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
+    # --- SPEED FIX: IDLE PROCESSES ---
+    # Keeps warm instances ready to eliminate cold-start lag on Railway/Sandbox.
+    agents.cli.run_app(agents.WorkerOptions(
+        entrypoint_fnc=entrypoint,
+        num_idle_processes=3
+    ))
