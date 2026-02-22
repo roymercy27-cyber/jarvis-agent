@@ -1,12 +1,19 @@
-livekit-agents
-livekit-plugins-openai
-livekit-plugins-silero
-livekit-plugins-google
-livekit-plugins-noise-cancellation
-mem0ai
-duckduckgo-search
-langchain_community
-requests
-python-dotenv
-pydantic-ai-slim[openai,mcp]
+# Core Agent Framework
+livekit-agents==1.4.2
 
+# Plugins
+livekit-plugins-openai==1.4.2
+livekit-plugins-silero==1.4.2
+livekit-plugins-google==1.4.2
+livekit-plugins-noise-cancellation==0.2.5
+
+# Memory and Search
+mem0ai==1.0.4
+tavily-python==0.7.21
+duckduckgo-search==2026.1.12
+
+# Tools and Infrastructure
+langchain_community==0.4.1
+requests==2.32.5
+python-dotenv==1.2.1
+pydantic-ai-slim[openai,mcp]==1.62.
