@@ -73,7 +73,7 @@ async def entrypoint(ctx: agents.JobContext):
     
 
     mem0 = AsyncMemoryClient()
-    user_name = 'David'
+    user_name = 'Ivan'
 
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
@@ -127,3 +127,4 @@ async def entrypoint(ctx: agents.JobContext):
 
 if __name__ == "__main__":
     agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
+
