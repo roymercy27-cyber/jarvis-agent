@@ -1,46 +1,36 @@
 import asyncio 
-from dotenv import load_dotenv
-
-from livekit import agents
-from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
-from livekit.plugins import (
-    noise_cancellation,
-    openai
-)
-from livekit.plugins import google
-from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
-from tools import get_weather, search_web, send_email
-from mem0 import AsyncMemoryClient
-from mcp_client import MCPServerSse
-from mcp_client.agent_tools import MCPToolsIntegration
 import os
 import json
 import logging
-load_dotenv()
+from dotenv import load_dotenv
 
+from livekit import agents
+from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm, RoomOptions
+from livekit.plugins import noise_cancellation, google
+
+# Import your custom prompts and tools
+from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
+from tools import get_weather, search_web, send_email
+from mem0 import AsyncMemoryClient
+
+load_dotenv()
 
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
+        # Lower temperature to 0.6 for more stable tool calls
         super().__init__(
             instructions=AGENT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
-                 temperature=0.7,
+                 temperature=0.6, 
             ),
-            tools=[
-                get_weather,
-                search_web,
-                send_email
-            ],
+            tools=[get_weather, search_web, send_email],
             chat_ctx=chat_ctx
         )
-        
 
 async def entrypoint(ctx: agents.JobContext):
-
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
         logging.info("Shutting down, saving chat context to memory...")
-
         messages_formatted = []
 
         for item in chat_ctx.items:
@@ -49,7 +39,6 @@ async def entrypoint(ctx: agents.JobContext):
             
             content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
 
-            # Avoid re-saving the initial memories we pulled at start
             if memory_str and memory_str in content_str:
                 continue
 
@@ -60,72 +49,61 @@ async def entrypoint(ctx: agents.JobContext):
                 })
 
         if messages_formatted:
-            logging.info(f"Sending {len(messages_formatted)} messages to Mem0 for Ivan...")
             try:
-                # Actual hand-off to Mem0
                 await mem0.add(messages_formatted, user_id="Ivan")
-                logging.info("Chat context successfully handed off to Mem0.")
+                logging.info("Chat context saved.")
             except Exception as e:
-                logging.error(f"Failed to save to Mem0: {e}")
+                logging.error(f"Save failed: {e}")
             
-            # --- NATURAL SAVING DELAY ---
-            # Increased to 3 seconds to ensure Mem0 finishes processing the batch
-            await asyncio.sleep(3) 
-            # ----------------------------
+            await asyncio.sleep(2) 
 
     session = AgentSession()
     mem0 = AsyncMemoryClient()
     user_name = 'Ivan'
 
-    # Load existing memories
+    # Load memories from Mem0
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
     memory_str = ''
 
     if results:
-        memories = [
-            {
-                "memory": result["memory"],
-                "updated_at": result["updated_at"]
-            }
-            for result in results
-        ]
+        memories = [{"memory": r["memory"], "updated_at": r["updated_at"]} for r in results]
         memory_str = json.dumps(memories)
-        logging.info(f"Memories: {memory_str}")
         initial_ctx.add_message(
             role="assistant",
-            content=f"The user's name is {user_name}, and this is relvant context about him: {memory_str}."
+            content=f"User: {user_name}. Context: {memory_str}. Use tools immediately when asked."
         )
 
-    mcp_server = MCPServerSse(
-        params={"url": os.environ.get("N8N_MCP_SERVER_URL")},
-        cache_tools_list=True,
-        name="SSE MCP Server"
-    )
-
-    agent = await MCPToolsIntegration.create_agent_with_tools(
-        agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx},
-        mcp_servers=[mcp_server]
-    )
+    # Simplified Agent creation (No MCP/n8n overhead)
+    agent = Assistant(chat_ctx=initial_ctx)
 
     await session.start(
         room=ctx.room,
         agent=agent,
+        # Optimization: Explicitly using RoomOptions (newer API)
+        room_options=RoomOptions(
+            video_out_enabled=True,
+        ),
         room_input_options=RoomInputOptions(
-            video_enabled=True,
             noise_cancellation=noise_cancellation.BVC(),
         ),
     )
 
     await ctx.connect()
 
+    # Direct instruction to prevent "nudging" for the first response
     await session.generate_reply(
-        instructions=SESSION_INSTRUCTION,
+        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan and proactively provide the current time/weather if relevant to his memories.",
     )
 
-    # Register the hook with all necessary state
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
 
 if __name__ == "__main__":
-    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
-
+    # --- CRITICAL RAILWAY MEMORY FIX ---
+    agents.cli.run_app(
+        agents.WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            max_parallel_jobs=1,      # Process only 1 call at a time to save RAM
+            num_warmed_workers=0,     # Stop Railway from pre-loading extra copies of the agent
+        )
+    )
