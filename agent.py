@@ -19,63 +19,45 @@ class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
         super().__init__(
             instructions=AGENT_INSTRUCTION,
-            # Updated to Google Gemini Realtime
             llm=google.beta.realtime.RealtimeModel(
                 voice="Charon",
                 temperature=0.7,
             ),
-            tools=[
-                get_weather,
-                search_web,
-                send_email
-            ],
+            tools=[get_weather, search_web, send_email],
             chat_ctx=chat_ctx
         )
 
 async def entrypoint(ctx: agents.JobContext):
-    # --- SPEED OPTIMIZATION: CONNECT IMMEDIATELY ---
-    # Registering with the room first makes the agent appear instantly in the Sandbox.
+    # --- SPEED FIX: CONNECT FIRST ---
+    # This ensures you join the Sandbox instantly.
     await ctx.connect()
-    logging.info("Connected to room instantly.")
+    logging.info("Jarvis joined the room.")
 
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
-        logging.info("Shutting down, saving chat context to memory...")
+        logging.info("Saving Ivan's context...")
         messages_formatted = []
-
         for item in chat_ctx.items:
             content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
             if memory_str and memory_str in content_str:
                 continue
-
             if item.role in ['user', 'assistant']:
-                messages_formatted.append({
-                    "role": item.role,
-                    "content": content_str.strip()
-                })
-
-        # Updated username to Ivan
+                messages_formatted.append({"role": item.role, "content": content_str.strip()})
+        
         await mem0.add(messages_formatted, user_id="Ivan")
-        logging.info("Chat context saved to memory.")
 
     session = AgentSession()
     mem0 = AsyncMemoryClient()
-    # Updated username to Ivan
     user_name = 'Ivan'
 
-    # Retrieve memories in the background while connection is active
+    # Load data in background
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
-    memory_str = ''
+    memory_str = json.dumps(results) if results else ""
 
     if results:
-        memories = [
-            {"memory": result["memory"], "updated_at": result["updated_at"]}
-            for result in results
-        ]
-        memory_str = json.dumps(memories)
         initial_ctx.add_message(
             role="assistant",
-            content=f"The user's name is {user_name}, and this is relevant context about him: {memory_str}."
+            content=f"User: {user_name}. Relevant context: {memory_str}."
         )
 
     mcp_server = MCPServerSse(
@@ -99,15 +81,11 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    await session.generate_reply(
-        instructions=SESSION_INSTRUCTION,
-    )
-
+    await session.generate_reply(instructions=SESSION_INSTRUCTION)
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
 
 if __name__ == "__main__":
-    # Added num_idle_processes to keep the agent "warm" on Railway
     agents.cli.run_app(agents.WorkerOptions(
         entrypoint_fnc=entrypoint,
-        num_idle_processes=3
+        num_idle_processes=1  # Fixed to 1 to prevent Code -9 OOM error
     ))
