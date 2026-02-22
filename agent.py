@@ -1,7 +1,8 @@
+import asyncio 
 from dotenv import load_dotenv
 
 from livekit import agents
-from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext
+from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import (
     noise_cancellation,
     openai
@@ -17,14 +18,26 @@ import json
 import logging
 load_dotenv()
 
-
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
+        # TIGHTENED PROTOCOL: Forces immediate tool execution without "chatter" first.
+        DIRECT_ACTION_INSTRUCTION = f"""
+        {AGENT_INSTRUCTION}
+
+        # DIRECT ACTION PROTOCOL
+        1. When the user asks for information (time, weather, facts), CALL THE TOOL IMMEDIATELY.
+        2. Do NOT say "Let me check that for you" or "One moment." 
+        3. Execute the tool call first, then provide the answer in your very first spoken response.
+        4. If you have memories (like the Friday date), include them only if they add value to the current request.
+        5. Never require a second nudge. If you are asked once, you answer with the data immediately.
+        6. Speak like a classy butler.
+        """
+        
         super().__init__(
-            instructions=AGENT_INSTRUCTION,
-            llm=openai.realtime.RealtimeModel(
-                 voice="sage"
-             
+            instructions=DIRECT_ACTION_INSTRUCTION,
+            llm=google.beta.realtime.RealtimeModel(
+                 voice="Charon",
+                 temperature=0.7, # Slightly lower temperature for more precise tool use
             ),
             tools=[
                 get_weather,
@@ -32,46 +45,35 @@ class Assistant(Agent):
                 send_email
             ],
             chat_ctx=chat_ctx
-
         )
-        
-
 
 async def entrypoint(ctx: agents.JobContext):
 
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
         logging.info("Shutting down, saving chat context to memory...")
-
-        messages_formatted = [
-        ]
-
-        logging.info(f"Chat context messages: {chat_ctx.items}")
-
+        messages_formatted = []
         for item in chat_ctx.items:
+            if not isinstance(item, llm.ChatMessage):
+                continue
             content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
-
             if memory_str and memory_str in content_str:
                 continue
-
             if item.role in ['user', 'assistant']:
                 messages_formatted.append({
                     "role": item.role,
                     "content": content_str.strip()
                 })
+        if messages_formatted:
+            try:
+                await mem0.add(messages_formatted, user_id="Ivan")
+                logging.info("Chat context saved to Mem0.")
+            except Exception as e:
+                logging.error(f"Failed to save to Mem0: {e}")
+            await asyncio.sleep(3) 
 
-        logging.info(f"Formatted messages to add to memory: {messages_formatted}")
-        await mem0.add(messages_formatted, user_id="David")
-        logging.info("Chat context saved to memory.")
-
-
-    session = AgentSession(
-        
-    )
-
-    
-
+    session = AgentSession()
     mem0 = AsyncMemoryClient()
-    user_name = 'David'
+    user_name = 'Ivan'
 
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
@@ -79,17 +81,13 @@ async def entrypoint(ctx: agents.JobContext):
 
     if results:
         memories = [
-            {
-                "memory": result["memory"],
-                "updated_at": result["updated_at"]
-            }
+            {"memory": result["memory"], "updated_at": result["updated_at"]}
             for result in results
         ]
         memory_str = json.dumps(memories)
-        logging.info(f"Memories: {memory_str}")
         initial_ctx.add_message(
             role="assistant",
-            content=f"The user's name is {user_name}, and this is relvant context about him: {memory_str}."
+            content=f"User: {user_name}. Memories: {memory_str}. Important: Use tools immediately when asked."
         )
 
     mcp_server = MCPServerSse(
@@ -107,9 +105,6 @@ async def entrypoint(ctx: agents.JobContext):
         room=ctx.room,
         agent=agent,
         room_input_options=RoomInputOptions(
-            # LiveKit Cloud enhanced noise cancellation
-            # - If self-hosting, omit this parameter
-            # - For telephony applications, use `BVCTelephony` for best results
             video_enabled=True,
             noise_cancellation=noise_cancellation.BVC(),
         ),
@@ -117,8 +112,9 @@ async def entrypoint(ctx: agents.JobContext):
 
     await ctx.connect()
 
+    # This ensures Jarvis starts the conversation with the info ready to go.
     await session.generate_reply(
-        instructions=SESSION_INSTRUCTION,
+        instructions=f"{SESSION_INSTRUCTION}\nBriefly greet Ivan and give him the current time and weather update immediately without being asked.",
     )
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
