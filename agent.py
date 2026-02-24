@@ -15,13 +15,16 @@ from mcp_client.agent_tools import MCPToolsIntegration
 
 load_dotenv()
 
+# Updated identity to force tool usage
+STRICT_INSTRUCTION = AGENT_INSTRUCTION + "\n\nCRITICAL: Always use the 'search_web' tool for any real-time data, stock prices, or news. Never guess. If you need a tool, call it immediately without asking for permission first."
+
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
         super().__init__(
-            instructions=AGENT_INSTRUCTION,
+            instructions=STRICT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
                 voice="Charon",
-                temperature=0.5,
+                temperature=0.1 # Lower temperature = higher accuracy & better tool calls
             ),
             tools=[get_weather, search_web, send_email],
             chat_ctx=chat_ctx
@@ -31,26 +34,14 @@ async def entrypoint(ctx: agents.JobContext):
     await ctx.connect()
     
     mem0 = AsyncMemoryClient()
-    user_name = 'Ivan' # Changed to Ivan for consistency
+    user_name = 'Ivan'
 
-    # 1. ROBUST SHUTDOWN HOOK
-    async def shutdown_hook(chat_ctx: ChatContext):
-        logging.info(f"Finalizing session for {user_name}...")
-        messages = []
-        for item in chat_ctx.items:
-            if item.role in ['user', 'assistant'] and item.content:
-                text = "".join(item.content) if isinstance(item.content, list) else str(item.content)
-                if text.strip():
-                    messages.append({"role": item.role, "content": text})
-        if messages:
-            await mem0.add(messages, user_id=user_name)
-
-    # Load memories at start
+    # Load past context
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
     if results:
-        mem_str = "\n".join([r['memory'] for r in results])
-        initial_ctx.add_message(role="assistant", content=f"Context for {user_name}: {mem_str}")
+        mem_str = " ".join([r['memory'] for r in results])
+        initial_ctx.add_message(role="assistant", content=f"System: User is {user_name}. Relevant past info: {mem_str}")
 
     mcp_server = MCPServerSse(params={"url": os.environ.get("N8N_MCP_SERVER_URL")}, name="SSE MCP Server")
     agent = await MCPToolsIntegration.create_agent_with_tools(
@@ -58,12 +49,12 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     session = AgentSession()
-    
-    # 2. THE MOBILE FIX: REAL-TIME AUTO-SAVE
-    # This captures your speech and saves it the moment you finish a sentence
+
+    # --- MOBILE FIX 1: REAL-TIME SAVING ---
     @session.on("user_speech_committed")
     def on_user_speech(msg: llm.ChatMessage):
-        logging.info("Auto-saving speech to Mem0...")
+        # We don't wait for the call to end. We save as we go.
+        logging.info(f"Auto-saving sentence for {user_name}...")
         asyncio.create_task(mem0.add(msg.content, user_id=user_name))
 
     await session.start(
@@ -76,7 +67,6 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     await session.generate_reply(instructions=SESSION_INSTRUCTION)
-    ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx))
 
 if __name__ == "__main__":
     agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=1))
