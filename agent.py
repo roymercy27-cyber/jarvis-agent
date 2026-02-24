@@ -24,7 +24,7 @@ class Assistant(Agent):
             instructions=STRICT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
                 voice="Charon",
-                temperature=0.1 # Lower temperature = higher accuracy & better tool calls
+                temperature=0.4 # Lower temperature = higher accuracy & better tool calls
             ),
             tools=[get_weather, search_web, send_email],
             chat_ctx=chat_ctx
@@ -70,3 +70,4 @@ async def entrypoint(ctx: agents.JobContext):
 
 if __name__ == "__main__":
     agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=1))
+
