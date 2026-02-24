@@ -8,42 +8,51 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Optional
 
-# Initialize Tavily Client (ensure TAVILY_API_KEY is in your .env)
+# Initialize Tavily Client
 tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
 @function_tool()
-async def search_web(
-    context: RunContext, 
-    query: str) -> str:
+async def search_web(context: RunContext, query: str) -> str:
     """
-    Search the web for real-time information, news, or specific facts.
-    Use this for any questions about current events or data not in your training set.
+    CRITICAL: Use this tool for ANY factual query, news, stock prices, or recent events. 
+    DO NOT guess. If the user asks for information from the internet, you MUST call this.
     """
     try:
-        # Using 'advanced' depth for higher accuracy and better reasoning
-        response = tavily.search(query=query, search_depth="advanced", max_results=5)
+        # Added include_answer=True for high-accuracy summaries
+        response = tavily.search(
+            query=query, 
+            search_depth="advanced", 
+            max_results=3, 
+            include_answer=True
+        )
         
+        # Priority 1: Use the AI-generated direct answer for accuracy
+        if response.get("answer"):
+            return f"DIRECT SEARCH ANSWER: {response['answer']}"
+        
+        # Priority 2: Fallback to ranked results
         results = []
         for res in response.get("results", []):
-            results.append(f"Title: {res['title']}\nContent: {res['content']}\nURL: {res['url']}\n")
+            results.append(f"- {res['title']}: {res['content']} ({res['url']})")
         
         output = "\n".join(results)
-        logging.info(f"Tavily search for '{query}' completed.")
-        return output if output else "No relevant results found."
+        return output if output else "No relevant real-time information found."
+        
     except Exception as e:
-        logging.error(f"Tavily search error: {e}")
-        return f"Error searching the web: {str(e)}"
+        logging.error(f"Tavily error: {e}")
+        return f"Search error: {str(e)}"
 
 @function_tool()
 async def get_weather(context: RunContext, city: str) -> str:
-    """Get the current weather for a specific city."""
+    """Get the current weather for a specific city. Use this when the user asks 'how is the weather'."""
     try:
-        response = requests.get(f"https://wttr.in/{city}?format=%C+%t+%w")
+        # Using a more reliable weather format
+        response = requests.get(f"https://wttr.in/{city}?format=%C+%t+with+wind+at+%w")
         if response.status_code == 200:
-            return f"Current weather in {city}: {response.text.strip()}"
-        return f"Could not retrieve weather for {city}."
+            return f"Weather in {city}: {response.text.strip()}"
+        return f"I couldn't find weather data for {city} right now."
     except Exception as e:
-        return f"Weather error: {str(e)}"
+        return f"Weather service error: {str(e)}"
 
 @function_tool()    
 async def send_email(
@@ -53,11 +62,14 @@ async def send_email(
     message: str,
     cc_email: Optional[str] = None
 ) -> str:
-    """Send an email. Requires 'to_email', 'subject', and 'message'."""
+    """Send an email. Mandatory parameters: to_email, subject, message."""
     try:
         gmail_user = os.getenv("GMAIL_USER")
         gmail_password = os.getenv("GMAIL_APP_PASSWORD")
         
+        if not gmail_user or not gmail_password:
+            return "Email error: Credentials not configured in environment variables."
+
         msg = MIMEMultipart()
         msg['From'] = gmail_user
         msg['To'] = to_email
@@ -74,6 +86,7 @@ async def send_email(
             server.login(gmail_user, gmail_password)
             server.sendmail(gmail_user, recipients, msg.as_string())
         
-        return f"Email successfully sent to {to_email}"
+        return f"Success: Email sent to {to_email}."
     except Exception as e:
+        logging.error(f"Email failed: {e}")
         return f"Failed to send email: {str(e)}"
