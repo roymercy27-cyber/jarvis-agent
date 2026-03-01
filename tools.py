@@ -42,7 +42,7 @@ async def search_web(context: RunContext, query: str) -> str:
 
 @function_tool()
 async def get_weather(context: RunContext, city: str) -> str:
-    """Get the current weather for a specific city. Use this when the user asks 'how is the weather'."""
+    """Get the current weather for a specific city."""
     try:
         response = requests.get(f"https://wttr.in/{city}?format=%C+%t+with+wind+at+%w")
         if response.status_code == 200:
@@ -102,12 +102,14 @@ async def mobile_whatsapp(
     The phone number should include the country code (e.g., +1234567890).
     """
     try:
-        # This sends a "hidden signal" into the LiveKit room
-        payload = f"whatsapp|{phone_number}|{message}".encode('utf-8')
+        # Construct the payload for the Android listener
+        payload_str = f"whatsapp|{phone_number}|{message}"
+        payload = payload_str.encode('utf-8')
         
-        # This is the cloud-to-mobile handshake
+        # Publish to the room so the Android app catches it
         await context.room.local_participant.publish_data(payload)
         
+        logging.info(f"WhatsApp handshake sent for {phone_number}")
         return f"Protocol initiated. Transmitting the WhatsApp data to your device for {phone_number}."
     except Exception as e:
         logging.error(f"WhatsApp Handshake failed: {e}")
