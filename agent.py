@@ -8,7 +8,7 @@ from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
-# Make sure to import the new tool
+# Tool imports
 from tools import get_weather, search_web, send_email, mobile_whatsapp 
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
@@ -24,7 +24,7 @@ class Assistant(Agent):
                 voice="Charon",
                 temperature=0.4, 
             ),
-            # Added mobile_whatsapp here
+            # mobile_whatsapp is now active in the toolbelt
             tools=[get_weather, search_web, send_email, mobile_whatsapp],
             chat_ctx=chat_ctx
         )
