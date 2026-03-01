@@ -1,34 +1,98 @@
+import logging
+import os
+import requests
+import smtplib
+import asyncio
+from livekit.agents import function_tool, RunContext
+from tavily import TavilyClient
+from email.mime.multipart import MIMEMultipart  
+from email.mime.text import MIMEText
+from typing import Optional
+
+# Initialize Tavily Client
+tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+
 @function_tool()
-async def send_smart_email(
-    context: RunContext,
-    recipient: str,
-    subject: str,
-    body: str
-) -> str:
+async def search_web(context: RunContext, query: str) -> str:
     """
-    Sends an email using the n8n MCP pipeline. 
-    Use this for more reliable delivery and formatting.
+    CRITICAL: Use this tool for ANY factual query, news, stock prices, or recent events. 
+    DO NOT guess. If the user asks for information from the internet, you MUST call this.
     """
     try:
-        # This sends the data directly to your n8n MCP Trigger
-        url = os.getenv("N8N_MCP_SERVER_URL")
-        payload = {
-            "action": "send_gmail",
-            "to": recipient,
-            "subject": subject,
-            "message": body
-        }
+        response = tavily.search(
+            query=query, 
+            search_depth="advanced", 
+            max_results=3, 
+            include_answer=True
+        )
         
-        # Using a background thread to keep Jarvis responsive
-        def _send_to_n8n():
-            return requests.post(url, json=payload, timeout=10)
-
-        response = await asyncio.to_thread(_send_to_n8n)
+        if response.get("answer"):
+            return f"DIRECT SEARCH ANSWER: {response['answer']}"
         
-        if response.status_code == 200:
-            return f"Email successfully routed through the nexus flow, sir."
-        else:
-            return "The n8n uplink rejected the transmission. Check the logs."
-            
+        results = []
+        for res in response.get("results", []):
+            results.append(f"- {res['title']}: {res['content']} ({res['url']})")
+        
+        output = "\n".join(results)
+        return output if output else "No relevant real-time information found."
+        
     except Exception as e:
-        return f"Sir, I've encountered a glitch in the n8n relay: {str(e)}"
+        logging.error(f"Tavily error: {e}")
+        return f"Search error: {str(e)}"
+
+@function_tool()
+async def get_weather(context: RunContext, city: str) -> str:
+    """Get the current weather for a specific city. Use this when the user asks 'how is the weather'."""
+    try:
+        response = requests.get(f"https://wttr.in/{city}?format=%C+%t+with+wind+at+%w")
+        if response.status_code == 200:
+            return f"Weather in {city}: {response.text.strip()}"
+        return f"I couldn't find weather data for {city} right now."
+    except Exception as e:
+        return f"Weather service error: {str(e)}"
+
+@function_tool()    
+async def send_email(
+    context: RunContext,
+    to_email: str,
+    subject: str,
+    message: str,
+    cc_email: Optional[str] = None
+) -> str:
+    """Send an email. Mandatory parameters: to_email, subject, message."""
+    
+    # We define the blocking code inside a separate function
+    def _blocking_send():
+        gmail_user = os.getenv("GMAIL_USER")
+        gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+        
+        if not gmail_user or not gmail_password:
+            return "Email error: Credentials not configured."
+
+        msg = MIMEMultipart()
+        msg['From'] = gmail_user
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        msg.attach(MIMEText(message, 'plain'))
+        
+        recipients = [to_email]
+        if cc_email:
+            msg['Cc'] = cc_email
+            recipients.append(cc_email)
+
+        # The actual network connection happens here
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()
+            server.login(gmail_user, gmail_password)
+            server.sendmail(gmail_user, recipients, msg.as_string())
+        
+        return f"Success: Email sent to {to_email}."
+
+    try:
+        # THE FIX: Run the blocking SMTP code in a background thread 
+        # so it doesn't freeze the Jarvis voice/connection.
+        result = await asyncio.to_thread(_blocking_send)
+        return result
+    except Exception as e:
+        logging.error(f"Email failed: {e}")
+        return f"Failed to send email: {str(e)}"
