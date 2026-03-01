@@ -8,7 +8,8 @@ from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
-from tools import get_weather, search_web, send_email
+# Make sure to import the new tool
+from tools import get_weather, search_web, send_email, mobile_whatsapp 
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
 from mcp_client.agent_tools import MCPToolsIntegration
@@ -23,7 +24,8 @@ class Assistant(Agent):
                 voice="Charon",
                 temperature=0.4, 
             ),
-            tools=[get_weather, search_web, send_email],
+            # Added mobile_whatsapp here
+            tools=[get_weather, search_web, send_email, mobile_whatsapp],
             chat_ctx=chat_ctx
         )
 
@@ -47,7 +49,6 @@ async def entrypoint(ctx: agents.JobContext):
         )
 
     # --- 2. THE MEMORY LOGGING FIX ---
-    # This matches the logic from your computer code that successfully notes memory.
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
         logging.info("Shutting down, saving chat context to memory...")
         messages_formatted = []
@@ -56,10 +57,8 @@ async def entrypoint(ctx: agents.JobContext):
             if not isinstance(item, llm.ChatMessage):
                 continue
             
-            # Use the content extraction logic from your computer code
             content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
             
-            # Avoid re-saving the initial context/system strings
             if memory_str and memory_str in content_str:
                 continue
             
@@ -71,13 +70,11 @@ async def entrypoint(ctx: agents.JobContext):
         
         if messages_formatted:
             try:
-                # Shield prevents the API call from being cancelled during the disconnect
                 await asyncio.shield(mem0.add(messages_formatted, user_id="Ivan"))
                 logging.info("Chat context saved to Mem0 successfully.")
             except Exception as e:
                 logging.error(f"Failed to save to Mem0: {e}")
             
-            # Short sleep to ensure the network buffer clears before process exit
             await asyncio.sleep(2)
 
     mcp_server = MCPServerSse(params={"url": os.environ.get("N8N_MCP_SERVER_URL")}, name="SSE MCP Server")
@@ -87,7 +84,6 @@ async def entrypoint(ctx: agents.JobContext):
 
     session = AgentSession()
 
-    # Real-time safeguard for mobile speech capture
     @session.on("user_speech_committed")
     def on_user_speech(msg: llm.ChatMessage):
         logging.info(f"Friday is committing user speech: {msg.content}")
@@ -104,7 +100,6 @@ async def entrypoint(ctx: agents.JobContext):
 
     await session.generate_reply(instructions=SESSION_INSTRUCTION)
 
-    # Register the shutdown hook to trigger when the job finishes
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
 
 if __name__ == "__main__":
