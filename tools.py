@@ -50,15 +50,19 @@ async def send_email(context: RunContext, to_email: str, subject: str, message: 
 async def mobile_whatsapp(context: RunContext, phone_number: str, message: str) -> str:
     """Triggers mobile to open WhatsApp. phone_number must include country code."""
     try:
-        # CLEANING LOGIC: WhatsApp API hates '+', spaces, or leading zeros in international format
-        # Example: '+254 712...' becomes '254712...'
         clean_number = phone_number.replace("+", "").replace(" ", "").replace("-", "")
-        
         payload_str = f"whatsapp|{clean_number}|{message}"
-        await context.room.local_participant.publish_data(payload_str.encode('utf-8'))
-        
-        logging.info(f"WhatsApp handshake sent for Kenya/International: {clean_number}")
-        return f"Initiating link for {clean_number}. Check your device, sir."
+        await context.room.local_participant.publish_data(payload_str.encode('utf-8'), reliable=True)
+        return f"Initiating WhatsApp link for {clean_number}."
     except Exception as e:
-        logging.error(f"WhatsApp Handshake failed: {e}")
-        return "The mobile uplink is unstable, sir."
+        return f"WhatsApp Handshake failed: {e}"
+
+@function_tool()
+async def mobile_discord(context: RunContext, message: str) -> str:
+    """Triggers mobile to open Discord."""
+    try:
+        payload_str = f"discord|none|{message}"
+        await context.room.local_participant.publish_data(payload_str.encode('utf-8'), reliable=True)
+        return "Initiating Discord uplink, sir."
+    except Exception as e:
+        return f"Discord Handshake failed: {e}"
