@@ -60,12 +60,9 @@ async def send_email(
     cc_email: Optional[str] = None
 ) -> str:
     """Send an email. Mandatory parameters: to_email, subject, message."""
-    
-    # We define the blocking code inside a separate function
     def _blocking_send():
         gmail_user = os.getenv("GMAIL_USER")
         gmail_password = os.getenv("GMAIL_APP_PASSWORD")
-        
         if not gmail_user or not gmail_password:
             return "Email error: Credentials not configured."
 
@@ -80,7 +77,6 @@ async def send_email(
             msg['Cc'] = cc_email
             recipients.append(cc_email)
 
-        # The actual network connection happens here
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.starttls()
             server.login(gmail_user, gmail_password)
@@ -89,10 +85,30 @@ async def send_email(
         return f"Success: Email sent to {to_email}."
 
     try:
-        # THE FIX: Run the blocking SMTP code in a background thread 
-        # so it doesn't freeze the Jarvis voice/connection.
         result = await asyncio.to_thread(_blocking_send)
         return result
     except Exception as e:
         logging.error(f"Email failed: {e}")
         return f"Failed to send email: {str(e)}"
+
+@function_tool()
+async def mobile_whatsapp(
+    context: RunContext, 
+    phone_number: str, 
+    message: str
+) -> str:
+    """
+    Triggers your mobile device to open WhatsApp with a specific message.
+    The phone number should include the country code (e.g., +1234567890).
+    """
+    try:
+        # This sends a "hidden signal" into the LiveKit room
+        payload = f"whatsapp|{phone_number}|{message}".encode('utf-8')
+        
+        # This is the cloud-to-mobile handshake
+        await context.room.local_participant.publish_data(payload)
+        
+        return f"Protocol initiated. Transmitting the WhatsApp data to your device for {phone_number}."
+    except Exception as e:
+        logging.error(f"WhatsApp Handshake failed: {e}")
+        return "I encountered a disturbance in the mobile uplink, sir."
