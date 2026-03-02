@@ -7,9 +7,9 @@ from dotenv import load_dotenv
 from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
-# REMOVED SESSION_INSTRUCTION to fix the Railway crash
+
+# Prompts and Tools stay exactly as you have them
 from prompts import AGENT_INSTRUCTION 
-# Tool imports
 from tools import get_weather, search_web, send_email, mobile_whatsapp, mobile_discord
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
@@ -25,7 +25,6 @@ class Assistant(Agent):
                 voice="Charon",
                 temperature=0.4, 
             ),
-            # Added mobile_discord to your active toolbelt
             tools=[get_weather, search_web, send_email, mobile_whatsapp, mobile_discord],
             chat_ctx=chat_ctx
         )
@@ -36,7 +35,7 @@ async def entrypoint(ctx: agents.JobContext):
     mem0 = AsyncMemoryClient()
     user_name = 'Ivan'
 
-    # --- 1. MEMORY LOADING ---
+    # --- 1. MEMORY LOADING (UNTOUCHED) ---
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
     memory_str = ""
@@ -49,7 +48,7 @@ async def entrypoint(ctx: agents.JobContext):
             content=f"System Context: User is {user_name}. Past facts: {memory_str}"
         )
 
-    # --- 2. SHUTDOWN LOGGING ---
+    # --- 2. SHUTDOWN LOGGING (UNTOUCHED) ---
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
         logging.info("Shutting down, saving chat context to memory...")
         messages_formatted = []
@@ -100,8 +99,6 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    # UPDATED: We no longer pass SESSION_INSTRUCTION. 
-    # Jarvis uses the memory logic in the AGENT_INSTRUCTION to greet Ivan strategically.
     await session.generate_reply() 
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
