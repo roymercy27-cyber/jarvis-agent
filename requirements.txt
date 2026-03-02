@@ -1,5 +1,6 @@
 livekit-agents==1.4.3
 livekit-plugins-google==1.4.3
+livekit-plugins-noise-cancellation==0.2.5
 aiohttp==3.10.11
 mem0ai
 tavily-python
