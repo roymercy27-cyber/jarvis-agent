@@ -7,9 +7,10 @@ from dotenv import load_dotenv
 from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
-from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
+# REMOVED SESSION_INSTRUCTION to fix the Railway crash
+from prompts import AGENT_INSTRUCTION 
 # Tool imports
-from tools import get_weather, search_web, send_email, mobile_whatsapp 
+from tools import get_weather, search_web, send_email, mobile_whatsapp, mobile_discord
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
 from mcp_client.agent_tools import MCPToolsIntegration
@@ -24,8 +25,8 @@ class Assistant(Agent):
                 voice="Charon",
                 temperature=0.4, 
             ),
-            # mobile_whatsapp is now active in the toolbelt
-            tools=[get_weather, search_web, send_email, mobile_whatsapp],
+            # Added mobile_discord to your active toolbelt
+            tools=[get_weather, search_web, send_email, mobile_whatsapp, mobile_discord],
             chat_ctx=chat_ctx
         )
 
@@ -48,7 +49,7 @@ async def entrypoint(ctx: agents.JobContext):
             content=f"System Context: User is {user_name}. Past facts: {memory_str}"
         )
 
-    # --- 2. THE MEMORY LOGGING FIX ---
+    # --- 2. SHUTDOWN LOGGING ---
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
         logging.info("Shutting down, saving chat context to memory...")
         messages_formatted = []
@@ -77,6 +78,7 @@ async def entrypoint(ctx: agents.JobContext):
             
             await asyncio.sleep(2)
 
+    # n8n Integration
     mcp_server = MCPServerSse(params={"url": os.environ.get("N8N_MCP_SERVER_URL")}, name="SSE MCP Server")
     agent = await MCPToolsIntegration.create_agent_with_tools(
         agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx}, mcp_servers=[mcp_server]
@@ -86,7 +88,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     @session.on("user_speech_committed")
     def on_user_speech(msg: llm.ChatMessage):
-        logging.info(f"Friday is committing user speech: {msg.content}")
+        logging.info(f"Jarvis is committing user speech: {msg.content}")
         asyncio.create_task(mem0.add(msg.content, user_id=user_name))
 
     await session.start(
@@ -98,7 +100,9 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    await session.generate_reply(instructions=SESSION_INSTRUCTION)
+    # UPDATED: We no longer pass SESSION_INSTRUCTION. 
+    # Jarvis uses the memory logic in the AGENT_INSTRUCTION to greet Ivan strategically.
+    await session.generate_reply() 
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
 
