@@ -7,3 +7,5 @@ mem0ai
 tavily-python
 langchain_community
 requests
+python-dotenv
+pydantic-ai-slim[openai,mcp]
