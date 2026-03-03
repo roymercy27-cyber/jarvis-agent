@@ -1,110 +1,141 @@
-import asyncio
-import os
-import json
 import logging
-from dotenv import load_dotenv
+from livekit.agents import function_tool, RunContext
+import requests
+from langchain_community.tools import DuckDuckGoSearchRun
+import os
+import smtplib
+import webbrowser
+from datetime import datetime
+from email.mime.multipart import MIMEMultipart  
+from email.mime.text import MIMEText
+from typing import Optional
 
-from livekit import agents
-from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
-from livekit.plugins import noise_cancellation, google
-# REMOVED SESSION_INSTRUCTION to fix the Railway crash
-from prompts import AGENT_INSTRUCTION 
-# Tool imports
-from tools import get_weather, search_web, send_email, mobile_whatsapp, mobile_discord
-from mem0 import AsyncMemoryClient
-from mcp_client import MCPServerSse
-from mcp_client.agent_tools import MCPToolsIntegration
+@function_tool()
+async def get_weather(
+    context: RunContext,  # type: ignore
+    city: str) -> str:
+    """
+    Get the current weather for a given city.
+    """
+    try:
+        response = requests.get(
+            f"https://wttr.in/{city}?format=3")
+        if response.status_code == 200:
+            logging.info(f"Weather for {city}: {response.text.strip()}")
+            return response.text.strip()   
+        else:
+            logging.error(f"Failed to get weather for {city}: {response.status_code}")
+            return f"Could not retrieve weather for {city}."
+    except Exception as e:
+        logging.error(f"Error retrieving weather for {city}: {e}")
+        return f"An error occurred while retrieving weather for {city}." 
 
-load_dotenv()
+@function_tool()
+async def search_web(
+    context: RunContext,  # type: ignore
+    query: str) -> str:
+    """
+    Search the web using DuckDuckGo.
+    """
+    try:
+        results = DuckDuckGoSearchRun().run(tool_input=query)
+        logging.info(f"Search results for '{query}': {results}")
+        return results
+    except Exception as e:
+        logging.error(f"Error searching the web for '{query}': {e}")
+        return f"An error occurred while searching the web for '{query}'."     
 
-class Assistant(Agent):
-    def __init__(self, chat_ctx=None) -> None:
-        super().__init__(
-            instructions=AGENT_INSTRUCTION,
-            llm=google.beta.realtime.RealtimeModel(
-                voice="Charon",
-                temperature=0.4, 
-            ),
-            # Added mobile_discord to your active toolbelt
-            tools=[get_weather, search_web, send_email, mobile_whatsapp, mobile_discord],
-            chat_ctx=chat_ctx
-        )
-
-async def entrypoint(ctx: agents.JobContext):
-    await ctx.connect()
-    
-    mem0 = AsyncMemoryClient()
-    user_name = 'Ivan'
-
-    # --- 1. MEMORY LOADING ---
-    results = await mem0.get_all(user_id=user_name)
-    initial_ctx = ChatContext()
-    memory_str = ""
-    if results:
-        memories = [{"memory": r["memory"], "updated_at": r["updated_at"]} for r in results]
-        memory_str = json.dumps(memories)
-        logging.info(f"Loaded memories for {user_name}")
-        initial_ctx.add_message(
-            role="assistant", 
-            content=f"System Context: User is {user_name}. Past facts: {memory_str}"
-        )
-
-    # --- 2. SHUTDOWN LOGGING ---
-    async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
-        logging.info("Shutting down, saving chat context to memory...")
-        messages_formatted = []
+@function_tool()    
+async def send_email(
+    context: RunContext,  # type: ignore
+    to_email: str,
+    subject: str,
+    message: str,
+    cc_email: Optional[str] = None
+) -> str:
+    """
+    Send an email through Gmail.
+    """
+    try:
+        smtp_server = "smtp.gmail.com"
+        smtp_port = 587
+        gmail_user = os.getenv("GMAIL_USER")
+        gmail_password = os.getenv("GMAIL_APP_PASSWORD") 
         
-        for item in chat_ctx.items:
-            if not isinstance(item, llm.ChatMessage):
-                continue
-            
-            content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
-            
-            if memory_str and memory_str in content_str:
-                continue
-            
-            if item.role in ['user', 'assistant']:
-                messages_formatted.append({
-                    "role": item.role,
-                    "content": content_str.strip()
-                })
+        if not gmail_user or not gmail_password:
+            logging.error("Gmail credentials not found in environment variables")
+            return "Email sending failed: Gmail credentials not configured."
         
-        if messages_formatted:
-            try:
-                await asyncio.shield(mem0.add(messages_formatted, user_id="Ivan"))
-                logging.info("Chat context saved to Mem0 successfully.")
-            except Exception as e:
-                logging.error(f"Failed to save to Mem0: {e}")
+        msg = MIMEMultipart()
+        msg['From'] = gmail_user
+        msg['To'] = to_email
+        msg['Subject'] = subject
+        
+        recipients = [to_email]
+        if cc_email:
+            msg['Cc'] = cc_email
+            recipients.append(cc_email)
+        
+        msg.attach(MIMEText(message, 'plain'))
+        
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(gmail_user, gmail_password)
+        
+        text = msg.as_string()
+        server.sendmail(gmail_user, recipients, text)
+        server.quit()
+        
+        logging.info(f"Email sent successfully to {to_email}")
+        return f"Email sent successfully to {to_email}"
+        
+    except Exception as e:
+        logging.error(f"Error sending email: {e}")
+        return f"An error occurred while sending email: {str(e)}"
+
+@function_tool()
+async def get_system_report(context: RunContext) -> str: # type: ignore
+    """
+    Provides a situational report including current time, date, and simulated system vitals.
+    """
+    now = datetime.now()
+    report = (
+        f"Current time is {now.strftime('%H:%M:%S')}, date: {now.strftime('%Y-%m-%d')}. "
+        "Arc Reactor stability is at 98%. Core temperature is 32 degrees Celsius. "
+        "All systems are nominal, sir."
+    )
+    logging.info("System report generated.")
+    return report
+
+@function_tool()
+async def open_browser(
+    context: RunContext, # type: ignore
+    url: str) -> str:
+    """
+    Opens a specific URL or website in the default web browser.
+    """
+    try:
+        # Ensure URL has a protocol
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
             
-            await asyncio.sleep(2)
+        webbrowser.open(url)
+        logging.info(f"Opening browser to: {url}")
+        return f"Protocol initiated. Opening {url} now."
+    except Exception as e:
+        logging.error(f"Failed to open browser: {e}")
+        return "I was unable to access the browser interface."
 
-    # n8n Integration
-    mcp_server = MCPServerSse(params={"url": os.environ.get("N8N_MCP_SERVER_URL")}, name="SSE MCP Server")
-    agent = await MCPToolsIntegration.create_agent_with_tools(
-        agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx}, mcp_servers=[mcp_server]
-    )
-
-    session = AgentSession()
-
-    @session.on("user_speech_committed")
-    def on_user_speech(msg: llm.ChatMessage):
-        logging.info(f"Jarvis is committing user speech: {msg.content}")
-        asyncio.create_task(mem0.add(msg.content, user_id=user_name))
-
-    await session.start(
-        room=ctx.room,
-        agent=agent,
-        room_input_options=RoomInputOptions(
-            video_enabled=True,
-            noise_cancellation=noise_cancellation.BVC(),
-        ),
-    )
-
-    # UPDATED: We no longer pass SESSION_INSTRUCTION. 
-    # Jarvis uses the memory logic in the AGENT_INSTRUCTION to greet Ivan strategically.
-    await session.generate_reply() 
-
-    ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
-
-if __name__ == "__main__":
-    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=1))
+@function_tool()
+async def calculate_math(
+    context: RunContext, # type: ignore
+    expression: str) -> str:
+    """
+    Evaluates mathematical expressions for complex calculations.
+    """
+    try:
+        # Using a safer eval approach or simple arithmetic
+        result = eval(expression, {"__builtins__": None}, {})
+        return f"The calculation is complete, sir. The result is {result}."
+    except Exception:
+        return "I encountered an error while processing that calculation."
