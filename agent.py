@@ -9,19 +9,18 @@ from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION 
-from tools import get_weather, search_web, send_email, mobile_whatsapp, mobile_discord
+import tools # Import our updated tools.py
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
 from mcp_client.agent_tools import MCPToolsIntegration
 
 load_dotenv()
 
-# --- NEW: CODE INTERPRETER TOOL ---
-@agents.function_tool(description="Runs Python code to solve math, process data, or debug logic.")
+# --- CODE INTERPRETER TOOL ---
+@llm.ai_callable(description="Runs Python code to solve math, process data, or debug logic.")
 def run_python_script(code: str):
     """Executes a python script in a separate process and returns the result."""
     try:
-        # Executes in the current server environment
         result = subprocess.run(
             ['python3', '-c', code], 
             capture_output=True, 
@@ -40,8 +39,15 @@ class Assistant(Agent):
                 voice="Charon",
                 temperature=0.4, 
             ),
-            # Added run_python_script to the toolbelt
-            tools=[get_weather, search_web, send_email, mobile_whatsapp, mobile_discord, run_python_script],
+            # Integrated all tools including the new direct email and python runner
+            tools=[
+                tools.get_weather, 
+                tools.search_web, 
+                tools.send_email, 
+                tools.mobile_whatsapp, 
+                tools.mobile_discord, 
+                run_python_script
+            ],
             chat_ctx=chat_ctx
         )
 
@@ -71,14 +77,14 @@ async def entrypoint(ctx: agents.JobContext):
         if mcp_url:
             logging.info(f"Connecting to MCP at {mcp_url}...")
             mcp_server = MCPServerSse(params={"url": mcp_url}, name="SSE MCP Server")
-            # Using wait_for to prevent infinite hanging if n8n is down
             agent = await asyncio.wait_for(
                 MCPToolsIntegration.create_agent_with_tools(
-                    agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx}, mcp_servers=[mcp_server]
+                    agent_class=Assistant, 
+                    agent_kwargs={"chat_ctx": initial_ctx}, 
+                    mcp_servers=[mcp_server]
                 ), timeout=15
             )
         else:
-            logging.warning("No N8N_MCP_SERVER_URL found. Running without MCP.")
             agent = Assistant(chat_ctx=initial_ctx)
     except Exception as e:
         logging.error(f"MCP Connection failed: {e}. Falling back to basic agent.")
@@ -97,17 +103,17 @@ async def entrypoint(ctx: agents.JobContext):
         agent=agent,
         room_input_options=RoomInputOptions(
             video_enabled=True,
-            # noise_cancellation=noise_cancellation.BVC(), # Disabled to prevent 'Cloud Required' crash
+            # noise_cancellation=noise_cancellation.BVC(), # Disabled for free-tier stability
         ),
     )
 
-    logging.info("Jarvis joined the room. Generating greeting...")
+    logging.info("Jarvis joined. Generating greeting...")
     await session.generate_reply() 
 
-    # --- 4. SHUTDOWN HOOK ---
+    # --- 4. SHUTDOWN CALLBACK ---
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
-        logging.info("Shutting down... saving memory.")
-        # Logic to save messages to Mem0...
+        logging.info("Shutting down... saving memory context.")
+        # Add your persistent memory saving logic here
         await asyncio.sleep(1)
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
