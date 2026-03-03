@@ -9,7 +9,6 @@ from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION 
-# FIXED: Removed 'send_email' from the import list below
 from tools import get_weather, search_web, mobile_whatsapp, mobile_discord
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
@@ -40,7 +39,6 @@ class Assistant(Agent):
                 voice="Charon",
                 temperature=0.4, 
             ),
-            # FIXED: Removed send_email here as well
             tools=[get_weather, search_web, mobile_whatsapp, mobile_discord, run_python_script],
             chat_ctx=chat_ctx
         )
@@ -52,12 +50,13 @@ async def entrypoint(ctx: agents.JobContext):
     mem0 = AsyncMemoryClient()
     user_name = 'Ivan'
 
-    # --- 1. MEMORY LOADING ---
+    # --- 1. MEMORY LOADING (Lean Loading) ---
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
     memory_str = ""
     if results:
-        memories = [{"memory": r["memory"], "updated_at": r["updated_at"]} for r in results]
+        # Only take the 5 most recent memories to save RAM
+        memories = [{"memory": r["memory"], "updated_at": r["updated_at"]} for r in results[-5:]]
         memory_str = json.dumps(memories)
         logging.info(f"Loaded {len(memories)} memories for {user_name}")
         initial_ctx.add_message(
@@ -77,7 +76,6 @@ async def entrypoint(ctx: agents.JobContext):
                 ), timeout=15
             )
         else:
-            logging.warning("No N8N_MCP_SERVER_URL found. Running without MCP.")
             agent = Assistant(chat_ctx=initial_ctx)
     except Exception as e:
         logging.error(f"MCP Connection failed: {e}. Falling back to basic agent.")
@@ -88,7 +86,7 @@ async def entrypoint(ctx: agents.JobContext):
     @session.on("user_speech_committed")
     def on_user_speech(msg: llm.ChatMessage):
         content_text = "".join(msg.content) if isinstance(msg.content, list) else str(msg.content)
-        logging.info(f"Jarvis committing user speech: {content_text}")
+        # Add to Mem0 in background, don't let it block speech
         asyncio.create_task(mem0.add(content_text, user_id=user_name))
 
     # --- 3. SESSION START ---
@@ -100,14 +98,18 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    logging.info("Jarvis joined the room. Generating greeting...")
+    logging.info("Jarvis joined the room.")
     await session.generate_reply() 
 
-    # --- 4. SHUTDOWN HOOK ---
+    # --- 4. OPTIMIZED SHUTDOWN HOOK ---
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
-        logging.info("Shutting down... saving memory.")
+        logging.info("Cleaning up session...")
         messages_to_save = []
-        for item in chat_ctx.items:
+        
+        # OOM PREVENTION: Only process the last 10 messages to keep memory low
+        recent_items = chat_ctx.items[-10:] if chat_ctx.items else []
+        
+        for item in recent_items:
             if isinstance(item, llm.ChatMessage) and item.role in ['user', 'assistant']:
                 content = "".join(item.content) if isinstance(item.content, list) else str(item.content)
                 if memory_str and memory_str in content:
@@ -116,11 +118,17 @@ async def entrypoint(ctx: agents.JobContext):
         
         if messages_to_save:
             try:
-                await asyncio.shield(mem0.add(messages_to_save, user_id=user_name))
-                logging.info("Conversation saved to Mem0 successfully.")
+                # Use a timeout to ensure the save doesn't hang the process
+                await asyncio.wait_for(
+                    asyncio.shield(mem0.add(messages_to_save, user_id=user_name)), 
+                    timeout=5.0
+                )
+                logging.info("Conversation saved.")
             except Exception as e:
-                logging.error(f"Failed to save to Mem0: {e}")
-        await asyncio.sleep(1)
+                logging.error(f"Save failed or timed out: {e}")
+        
+        # Explicitly clear context to free RAM
+        chat_ctx.items.clear()
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
 
