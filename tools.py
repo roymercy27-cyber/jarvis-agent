@@ -1,81 +1,102 @@
-import logging
-import os
-import requests
-import smtplib
 import asyncio
-from livekit import agents 
-from tavily import TavilyClient
-from email.mime.multipart import MIMEMultipart  
-from email.mime.text import MIMEText
-from typing import Optional
+import os
+import json
+import logging
+from dotenv import load_dotenv
 
-# Initialize Tavily
-tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+from livekit import agents
+from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
+from livekit.plugins import noise_cancellation, google
+from prompts import AGENT_INSTRUCTION 
+from tools import get_weather, search_web, send_email, mobile_whatsapp, mobile_discord
+from mem0 import AsyncMemoryClient
+from mcp_client import MCPServerSse
+from mcp_client.agent_tools import MCPToolsIntegration
 
-@agents.function_tool(description="CRITICAL: Use for factual queries or recent events.")
-async def search_web(query: str) -> str:
-    """Search the internet for real-time information."""
-    try:
-        response = tavily.search(query=query, search_depth="advanced", max_results=3, include_answer=True)
-        if response.get("answer"): return f"DIRECT SEARCH ANSWER: {response['answer']}"
-        results = [f"- {res['title']}: {res['content']} ({res['url']})" for res in response.get("results", [])]
-        return "\n".join(results) if results else "No relevant info found."
-    except Exception as e:
-        return f"Search error: {str(e)}"
+load_dotenv()
 
-@agents.function_tool(description="Get the current weather for a specific city.")
-async def get_weather(city: str) -> str:
-    """Fetch current weather using wttr.in."""
-    try:
-        response = requests.get(f"https://wttr.in/{city}?format=%C+%t+with+wind+at+%w")
-        return f"Weather in {city}: {response.text.strip()}" if response.status_code == 200 else "Weather data unavailable."
-    except Exception as e:
-        return f"Weather error: {str(e)}"
+class Assistant(Agent):
+    def __init__(self, chat_ctx=None) -> None:
+        super().__init__(
+            instructions=AGENT_INSTRUCTION,
+            llm=google.beta.realtime.RealtimeModel(
+                voice="Charon",
+                temperature=0.4, 
+            ),
+            tools=[get_weather, search_web, send_email, mobile_whatsapp, mobile_discord],
+            chat_ctx=chat_ctx
+        )
 
-@agents.function_tool(description="Send an email directly from Jarvis using Gmail SMTP.")
-async def send_email(to_email: str, subject: str, message: str, cc_email: Optional[str] = None) -> str:
-    """Sends a professional email via Gmail Port 465 (SSL) with a safety timeout."""
-    def _blocking_send():
-        gmail_user = os.getenv("GMAIL_USER")
-        gmail_password = os.getenv("GMAIL_APP_PASSWORD")
-        
-        if not gmail_user or not gmail_password: 
-            return "Email error: GMAIL_USER or GMAIL_APP_PASSWORD missing in Railway Variables."
-            
-        msg = MIMEMultipart()
-        msg['From'] = gmail_user
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        msg.attach(MIMEText(message, 'plain'))
-        
-        if cc_email:
-            msg['Cc'] = cc_email
-        
-        recipients = [to_email] + ([cc_email] if cc_email else [])
-        
+async def entrypoint(ctx: agents.JobContext):
+    logging.info(f"Connecting to room: {ctx.room.name}")
+    await ctx.connect()
+    
+    mem0 = AsyncMemoryClient()
+    user_name = 'Ivan'
+
+    # --- 1. MEMORY LOADING ---
+    results = await mem0.get_all(user_id=user_name)
+    initial_ctx = ChatContext()
+    memory_str = ""
+    if results:
+        memories = [{"memory": r["memory"], "updated_at": r["updated_at"]} for r in results]
+        memory_str = json.dumps(memories)
+        logging.info(f"Loaded memories for {user_name}")
+        initial_ctx.add_message(
+            role="assistant", 
+            content=f"System Context: User is {user_name}. Past facts: {memory_str}"
+        )
+
+    # --- 2. RESILIENT MCP (n8n) SETUP ---
+    mcp_url = os.environ.get("N8N_MCP_SERVER_URL")
+    agent = None
+    
+    if mcp_url:
         try:
-            # Added a 15-second timeout to the SMTP connection itself
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as server:
-                server.login(gmail_user, gmail_password)
-                server.sendmail(gmail_user, recipients, msg.as_string())
-            return f"Success: Email sent to {to_email}."
-        except Exception as smtp_err:
-            return f"SMTP Error: {str(smtp_err)}"
+            logging.info(f"Connecting to MCP at {mcp_url}...")
+            mcp_server = MCPServerSse(params={"url": mcp_url}, name="SSE MCP Server")
+            # CRITICAL FIX: Timeout prevents Jarvis from "blinking" forever if n8n is slow
+            agent = await asyncio.wait_for(
+                MCPToolsIntegration.create_agent_with_tools(
+                    agent_class=Assistant, 
+                    agent_kwargs={"chat_ctx": initial_ctx}, 
+                    mcp_servers=[mcp_server]
+                ), timeout=10
+            )
+        except Exception as e:
+            logging.error(f"MCP Connection failed or timed out: {e}. Joining room without n8n.")
+    
+    # Fallback to standard agent if n8n fails or times out
+    if not agent:
+        agent = Assistant(chat_ctx=initial_ctx)
 
-    try: 
-        logging.info(f"Jarvis: Attempting email to {to_email}...")
-        # Wrap in wait_for to prevent the agent from hanging if SMTP is stuck
-        result = await asyncio.wait_for(asyncio.to_thread(_blocking_send), timeout=20.0)
-        return result
-    except asyncio.TimeoutError:
-        return "Email failed: Connection to Gmail timed out. Please try again."
-    except Exception as e: 
-        return f"System Failure: {str(e)}"
+    session = AgentSession()
 
-@agents.function_tool(description="Triggers mobile to open WhatsApp.")
-async def mobile_whatsapp(phone_number: str, message: str) -> str:
-    return f"WhatsApp request for {phone_number} initiated. Message: {message}"
+    @session.on("user_speech_committed")
+    def on_user_speech(msg: llm.ChatMessage):
+        logging.info(f"Jarvis logging memory: {msg.content}")
+        asyncio.create_task(mem0.add(msg.content, user_id=user_name))
 
-@agents.function_tool(description="Triggers mobile to open Discord.")
-async def mobile_discord(message: str) -> str:
-    return "Discord uplink initiated."
+    # --- 3. SESSION START ---
+    await session.start(
+        room=ctx.room,
+        agent=agent,
+        room_input_options=RoomInputOptions(
+            video_enabled=True,
+            noise_cancellation=noise_cancellation.BVC(),
+        ),
+    )
+
+    logging.info("Jarvis joined. Generating greeting...")
+    await session.generate_reply() 
+
+    # --- 4. SHUTDOWN LOGGING ---
+    async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
+        logging.info("Shutting down, saving context...")
+        # ... (rest of your existing shutdown logic)
+        await asyncio.sleep(1)
+
+    ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
+
+if __name__ == "__main__":
+    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=1))
