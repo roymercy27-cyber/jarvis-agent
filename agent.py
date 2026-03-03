@@ -25,7 +25,7 @@ def run_python_script(code: str):
             ['python3', '-c', code], 
             capture_output=True, 
             text=True, 
-            timeout=15
+            timeout=10 # Reduced timeout to save resources
         )
         return f"Output: {result.stdout}\nErrors: {result.stderr}"
     except Exception as e:
@@ -33,8 +33,11 @@ def run_python_script(code: str):
 
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
+        # Added explicit instructions to prioritize MCP tools for Email, Spotify, and Calendar
+        mcp_instructions = f"{AGENT_INSTRUCTION}\n\nIMPORTANT: Use your connected MCP tools for Gmail (send_email), Spotify, and Google Calendar. If the user asks to send an email, use the 'send_message' or 'send_email' tool provided by the MCP server."
+        
         super().__init__(
-            instructions=AGENT_INSTRUCTION,
+            instructions=mcp_instructions,
             llm=google.beta.realtime.RealtimeModel(
                 voice="Charon",
                 temperature=0.4, 
@@ -55,13 +58,12 @@ async def entrypoint(ctx: agents.JobContext):
     initial_ctx = ChatContext()
     memory_str = ""
     if results:
-        # Only take the 5 most recent memories to save RAM
-        memories = [{"memory": r["memory"], "updated_at": r["updated_at"]} for r in results[-5:]]
+        # Only take the 3 most recent memories to keep memory extremely lean
+        memories = [{"memory": r["memory"]} for r in results[-3:]]
         memory_str = json.dumps(memories)
-        logging.info(f"Loaded {len(memories)} memories for {user_name}")
         initial_ctx.add_message(
             role="assistant", 
-            content=f"System Context: User is {user_name}. Past facts: {memory_str}"
+            content=f"System Context: User is {user_name}. Recent facts: {memory_str}"
         )
 
     # --- 2. MCP & N8N INTEGRATION ---
@@ -70,10 +72,11 @@ async def entrypoint(ctx: agents.JobContext):
         if mcp_url:
             logging.info(f"Connecting to MCP at {mcp_url}...")
             mcp_server = MCPServerSse(params={"url": mcp_url}, name="SSE MCP Server")
+            # Increased timeout for the initial handshake
             agent = await asyncio.wait_for(
                 MCPToolsIntegration.create_agent_with_tools(
                     agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx}, mcp_servers=[mcp_server]
-                ), timeout=15
+                ), timeout=20
             )
         else:
             agent = Assistant(chat_ctx=initial_ctx)
@@ -86,7 +89,6 @@ async def entrypoint(ctx: agents.JobContext):
     @session.on("user_speech_committed")
     def on_user_speech(msg: llm.ChatMessage):
         content_text = "".join(msg.content) if isinstance(msg.content, list) else str(msg.content)
-        # Add to Mem0 in background, don't let it block speech
         asyncio.create_task(mem0.add(content_text, user_id=user_name))
 
     # --- 3. SESSION START ---
@@ -98,39 +100,31 @@ async def entrypoint(ctx: agents.JobContext):
         ),
     )
 
-    logging.info("Jarvis joined the room.")
+    logging.info("Jarvis ready.")
     await session.generate_reply() 
 
     # --- 4. OPTIMIZED SHUTDOWN HOOK ---
-    async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
-        logging.info("Cleaning up session...")
+    async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient):
+        logging.info("Cleaning up...")
+        # Only save the last 5 items to prevent OOM on shutdown
         messages_to_save = []
-        
-        # OOM PREVENTION: Only process the last 10 messages to keep memory low
-        recent_items = chat_ctx.items[-10:] if chat_ctx.items else []
+        recent_items = chat_ctx.items[-5:] if chat_ctx.items else []
         
         for item in recent_items:
             if isinstance(item, llm.ChatMessage) and item.role in ['user', 'assistant']:
                 content = "".join(item.content) if isinstance(item.content, list) else str(item.content)
-                if memory_str and memory_str in content:
-                    continue
                 messages_to_save.append({"role": item.role, "content": content})
         
         if messages_to_save:
             try:
-                # Use a timeout to ensure the save doesn't hang the process
-                await asyncio.wait_for(
-                    asyncio.shield(mem0.add(messages_to_save, user_id=user_name)), 
-                    timeout=5.0
-                )
-                logging.info("Conversation saved.")
-            except Exception as e:
-                logging.error(f"Save failed or timed out: {e}")
+                await asyncio.wait_for(mem0.add(messages_to_save, user_id=user_name), timeout=3.0)
+            except:
+                pass
         
-        # Explicitly clear context to free RAM
         chat_ctx.items.clear()
 
-    ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
+    ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0))
 
 if __name__ == "__main__":
-    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=1))
+    # CRITICAL: Changed num_idle_processes to 0 to stop Out of Memory errors on Railway
+    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=0))
