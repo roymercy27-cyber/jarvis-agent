@@ -26,25 +26,47 @@ async def search_web(context: RunContext, query: str) -> str:
 async def get_weather(context: RunContext, city: str) -> str:
     """Get the current weather."""
     try:
-        response = requests.get(f"https://wttr.in/{city}?format=%C+%t+with+wind+at+%w")
+        # Added 5s timeout to prevent hanging
+        response = requests.get(f"https://wttr.in/{city}?format=%C+%t+with+wind+at+%w", timeout=5)
         return f"Weather in {city}: {response.text.strip()}" if response.status_code == 200 else "Weather data unavailable."
     except Exception as e:
         return f"Weather error: {str(e)}"
 
 @function_tool()    
 async def send_email(context: RunContext, to_email: str, subject: str, message: str, cc_email: Optional[str] = None) -> str:
-    """Send an email."""
+    """Send an email without blocking the agent."""
     def _blocking_send():
-        gmail_user, gmail_password = os.getenv("GMAIL_USER"), os.getenv("GMAIL_APP_PASSWORD")
-        if not gmail_user or not gmail_password: return "Email error: Credentials missing."
-        msg = MIMEMultipart(); msg['From'] = gmail_user; msg['To'] = to_email; msg['Subject'] = subject
+        gmail_user = os.getenv("GMAIL_USER")
+        gmail_password = os.getenv("GMAIL_APP_PASSWORD")
+        
+        if not gmail_user or not gmail_password: 
+            return "Email error: Credentials missing in environment."
+            
+        msg = MIMEMultipart()
+        msg['From'] = gmail_user
+        msg['To'] = to_email
+        msg['Subject'] = subject
         msg.attach(MIMEText(message, 'plain'))
+        
         recipients = [to_email] + ([cc_email] if cc_email else [])
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls(); server.login(gmail_user, gmail_password); server.sendmail(gmail_user, recipients, msg.as_string())
-        return f"Success: Email sent to {to_email}."
-    try: return await asyncio.to_thread(_blocking_send)
-    except Exception as e: return f"Failed to send email: {str(e)}"
+        
+        try:
+            # Added explicit timeout=10 to the SMTP connection
+            with smtplib.SMTP("smtp.gmail.com", 587, timeout=10) as server:
+                server.starttls()
+                server.login(gmail_user, gmail_password)
+                server.sendmail(gmail_user, recipients, msg.as_string())
+            return f"Success: Email sent to {to_email}."
+        except smtplib.SMTPAuthenticationError:
+            return "Email error: Authentication failed. Please check your App Password."
+        except Exception as e:
+            return f"SMTP Error: {str(e)}"
+
+    try: 
+        # Offload the blocking SMTP call to a separate thread
+        return await asyncio.to_thread(_blocking_send)
+    except Exception as e: 
+        return f"Failed to initiate email protocol: {str(e)}"
 
 @function_tool()
 async def mobile_whatsapp(context: RunContext, phone_number: str, message: str) -> str:
@@ -66,10 +88,3 @@ async def mobile_discord(context: RunContext, message: str) -> str:
         return "Initiating Discord uplink, sir."
     except Exception as e:
         return f"Discord Handshake failed: {e}"
-
-
-
-
-
-
-
