@@ -1,150 +1,75 @@
 import logging
-from livekit.agents import function_tool, RunContext
-import requests
-from tavily import TavilyClient
 import os
+import requests
 import smtplib
-import webbrowser
-from datetime import datetime
+import asyncio
+from livekit.agents import function_tool, RunContext
+from tavily import TavilyClient
 from email.mime.multipart import MIMEMultipart  
 from email.mime.text import MIMEText
 from typing import Optional
 
-# Initialize Tavily Client
 tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
 @function_tool()
-async def get_weather(
-    context: RunContext,  # type: ignore
-    city: str) -> str:
-    """
-    Get the current weather for a given city.
-    """
+async def search_web(context: RunContext, query: str) -> str:
+    """CRITICAL: Use for factual queries or recent events."""
     try:
-        response = requests.get(
-            f"https://wttr.in/{city}?format=3")
-        if response.status_code == 200:
-            logging.info(f"Weather for {city}: {response.text.strip()}")
-            return response.text.strip()    
-        else:
-            logging.error(f"Failed to get weather for {city}: {response.status_code}")
-            return f"Could not retrieve weather for {city}."
-    except Exception as e:
-        logging.error(f"Error retrieving weather for {city}: {e}")
-        return f"An error occurred while retrieving weather for {city}." 
-
-@function_tool()
-async def search_web(
-    context: RunContext,  # type: ignore
-    query: str) -> str:
-    """
-    Search the web using Tavily.
-    """
-    try:
-        # Performing the search using Tavily
-        response = tavily.search(query=query, search_depth="advanced", max_results=3)
-        
-        # Formatting results into a readable string
+        response = tavily.search(query=query, search_depth="advanced", max_results=3, include_answer=True)
+        if response.get("answer"): return f"DIRECT SEARCH ANSWER: {response['answer']}"
         results = [f"- {res['title']}: {res['content']} ({res['url']})" for res in response.get("results", [])]
-        final_results = "\n".join(results) if results else "No relevant information found."
-        
-        logging.info(f"Tavily search results for '{query}': {final_results}")
-        return final_results
+        return "\n".join(results) if results else "No relevant info found."
     except Exception as e:
-        logging.error(f"Error searching the web with Tavily for '{query}': {e}")
-        return f"An error occurred while searching the web for '{query}'."      
+        return f"Search error: {str(e)}"
 
-@function_tool()     
-async def send_email(
-    context: RunContext,  # type: ignore
-    to_email: str,
-    subject: str,
-    message: str,
-    cc_email: Optional[str] = None
-) -> str:
-    """
-    Send an email through Gmail.
-    """
+@function_tool()
+async def get_weather(context: RunContext, city: str) -> str:
+    """Get the current weather."""
     try:
-        smtp_server = "smtp.gmail.com"
-        smtp_port = 587
-        gmail_user = os.getenv("GMAIL_USER")
-        gmail_password = os.getenv("GMAIL_APP_PASSWORD") 
-        
-        if not gmail_user or not gmail_password:
-            logging.error("Gmail credentials not found in environment variables")
-            return "Email sending failed: Gmail credentials not configured."
-        
-        msg = MIMEMultipart()
-        msg['From'] = gmail_user
-        msg['To'] = to_email
-        msg['Subject'] = subject
-        
-        recipients = [to_email]
-        if cc_email:
-            msg['Cc'] = cc_email
-            recipients.append(cc_email)
-        
+        response = requests.get(f"https://wttr.in/{city}?format=%C+%t+with+wind+at+%w")
+        return f"Weather in {city}: {response.text.strip()}" if response.status_code == 200 else "Weather data unavailable."
+    except Exception as e:
+        return f"Weather error: {str(e)}"
+
+@function_tool()    
+async def send_email(context: RunContext, to_email: str, subject: str, message: str, cc_email: Optional[str] = None) -> str:
+    """Send an email."""
+    def _blocking_send():
+        gmail_user, gmail_password = os.getenv("GMAIL_USER"), os.getenv("GMAIL_APP_PASSWORD")
+        if not gmail_user or not gmail_password: return "Email error: Credentials missing."
+        msg = MIMEMultipart(); msg['From'] = gmail_user; msg['To'] = to_email; msg['Subject'] = subject
         msg.attach(MIMEText(message, 'plain'))
-        
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-        server.login(gmail_user, gmail_password)
-        
-        text = msg.as_string()
-        server.sendmail(gmail_user, recipients, text)
-        server.quit()
-        
-        logging.info(f"Email sent successfully to {to_email}")
-        return f"Email sent successfully to {to_email}"
-        
-    except Exception as e:
-        logging.error(f"Error sending email: {e}")
-        return f"An error occurred while sending email: {str(e)}"
+        recipients = [to_email] + ([cc_email] if cc_email else [])
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls(); server.login(gmail_user, gmail_password); server.sendmail(gmail_user, recipients, msg.as_string())
+        return f"Success: Email sent to {to_email}."
+    try: return await asyncio.to_thread(_blocking_send)
+    except Exception as e: return f"Failed to send email: {str(e)}"
 
 @function_tool()
-async def get_system_report(context: RunContext) -> str: # type: ignore
-    """
-    Provides a situational report including current time, date, and simulated system vitals.
-    """
-    now = datetime.now()
-    report = (
-        f"Current time is {now.strftime('%H:%M:%S')}, date: {now.strftime('%Y-%m-%d')}. "
-        "Arc Reactor stability is at 98%. Core temperature is 32 degrees Celsius. "
-        "All systems are nominal, sir."
-    )
-    logging.info("System report generated.")
-    return report
-
-@function_tool()
-async def open_browser(
-    context: RunContext, # type: ignore
-    url: str) -> str:
-    """
-    Opens a specific URL or website in the default web browser.
-    """
+async def mobile_whatsapp(context: RunContext, phone_number: str, message: str) -> str:
+    """Triggers mobile to open WhatsApp. phone_number must include country code."""
     try:
-        # Ensure URL has a protocol
-        if not url.startswith(('http://', 'https://')):
-            url = 'https://' + url
-            
-        webbrowser.open(url)
-        logging.info(f"Opening browser to: {url}")
-        return f"Protocol initiated. Opening {url} now."
+        clean_number = phone_number.replace("+", "").replace(" ", "").replace("-", "")
+        payload_str = f"whatsapp|{clean_number}|{message}"
+        await context.room.local_participant.publish_data(payload_str.encode('utf-8'), reliable=True)
+        return f"Initiating WhatsApp link for {clean_number}."
     except Exception as e:
-        logging.error(f"Failed to open browser: {e}")
-        return "I was unable to access the browser interface."
+        return f"WhatsApp Handshake failed: {e}"
 
 @function_tool()
-async def calculate_math(
-    context: RunContext, # type: ignore
-    expression: str) -> str:
-    """
-    Evaluates mathematical expressions for complex calculations.
-    """
+async def mobile_discord(context: RunContext, message: str) -> str:
+    """Triggers mobile to open Discord."""
     try:
-        # Using a safer eval approach or simple arithmetic
-        result = eval(expression, {"__builtins__": None}, {})
-        return f"The calculation is complete, sir. The result is {result}."
-    except Exception:
-        return "I encountered an error while processing that calculation."
+        payload_str = f"discord|none|{message}"
+        await context.room.local_participant.publish_data(payload_str.encode('utf-8'), reliable=True)
+        return "Initiating Discord uplink, sir."
+    except Exception as e:
+        return f"Discord Handshake failed: {e}"
+
+
+
+
+
+
+
