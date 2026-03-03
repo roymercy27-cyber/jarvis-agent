@@ -9,7 +9,7 @@ from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION 
-# Removed send_email from local imports
+# FIXED: Removed 'send_email' from the import list below
 from tools import get_weather, search_web, mobile_whatsapp, mobile_discord
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
@@ -17,6 +17,7 @@ from mcp_client.agent_tools import MCPToolsIntegration
 
 load_dotenv()
 
+# --- CODE INTERPRETER TOOL ---
 @agents.function_tool(description="Runs Python code to solve math, process data, or debug logic.")
 def run_python_script(code: str):
     """Executes a python script in a separate process and returns the result."""
@@ -39,7 +40,7 @@ class Assistant(Agent):
                 voice="Charon",
                 temperature=0.4, 
             ),
-            # send_email removed here; will be provided by MCP Tools Integration
+            # FIXED: Removed send_email here as well
             tools=[get_weather, search_web, mobile_whatsapp, mobile_discord, run_python_script],
             chat_ctx=chat_ctx
         )
