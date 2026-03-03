@@ -5,20 +5,23 @@ import logging
 import subprocess
 from dotenv import load_dotenv
 
+# Main LiveKit Imports
 from livekit import agents
-# REVERTED: Changed RoomOptions back to RoomInputOptions
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
-from livekit.plugins import noise_cancellation, google
+from livekit.plugins import google
 from prompts import AGENT_INSTRUCTION 
 import tools 
+
+# Memory and Protocol Imports
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
 from mcp_client.agent_tools import MCPToolsIntegration
 
 load_dotenv()
 
-@agents.function_tool(description="Runs Python code to solve math, process data, or debug logic.")
+@agents.function_tool(description="Runs Python code to solve math or process data.")
 def run_python_script(code: str):
+    """Executes code in a subprocess and returns stdout/stderr."""
     try:
         result = subprocess.run(['python3', '-c', code], capture_output=True, text=True, timeout=15)
         return f"Output: {result.stdout}\nErrors: {result.stderr}"
@@ -32,15 +35,17 @@ class Assistant(Agent):
             llm=google.beta.realtime.RealtimeModel(
                 voice="Charon",
                 temperature=0.4,
-                # Keeps the interruption protection
+                # Strong VAD to prevent interruption during tool calls (emails)
                 turn_detection=google.beta.realtime.VADOptions(
                     threshold=0.8, 
                     prefix_padding_ms=300,
                     silence_duration_ms=600
                 )
             ),
-            tools=[tools.get_weather, tools.search_web, tools.send_email, 
-                   tools.mobile_whatsapp, tools.mobile_discord, run_python_script],
+            tools=[
+                tools.get_weather, tools.search_web, tools.send_email, 
+                tools.mobile_whatsapp, tools.mobile_discord, run_python_script
+            ],
             chat_ctx=chat_ctx
         )
 
@@ -58,7 +63,7 @@ async def entrypoint(ctx: agents.JobContext):
         memories = [{"memory": r["memory"]} for r in results]
         initial_ctx.add_message(role="assistant", content=f"User Context: {json.dumps(memories)}")
 
-    # --- 2. RESILIENT MCP SETUP ---
+    # --- 2. MCP INTEGRATION ---
     mcp_url = os.environ.get("N8N_MCP_SERVER_URL")
     agent = None
     if mcp_url:
@@ -66,39 +71,38 @@ async def entrypoint(ctx: agents.JobContext):
             mcp_server = MCPServerSse(params={"url": mcp_url}, name="SSE MCP Server")
             agent = await asyncio.wait_for(
                 MCPToolsIntegration.create_agent_with_tools(
-                    agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx}, mcp_servers=[mcp_server]
-                ), timeout=10
+                    agent_class=Assistant, 
+                    agent_kwargs={"chat_ctx": initial_ctx}, 
+                    mcp_servers=[mcp_server]
+                ), timeout=12
             )
         except Exception as e:
-            logging.error(f"MCP failed: {e}")
+            logging.error(f"MCP Connection failed, falling back: {e}")
 
     if not agent:
         agent = Assistant(chat_ctx=initial_ctx)
 
     session = AgentSession()
 
-    # --- 3. REAL-TIME MEMORY LOGGING ---
+    # --- 3. LIVE MEMORY CAPTURE ---
     @session.on("user_speech_committed")
     def on_user_speech(msg: llm.ChatMessage):
-        logging.info(f"Saving User Memory: {msg.content}")
+        logging.info(f"Memory: Logging user input -> {msg.content[:50]}...")
         asyncio.create_task(mem0.add(msg.content, user_id=user_name))
 
     @session.on("agent_speech_committed")
     def on_agent_speech(msg: llm.ChatMessage):
-        logging.info("Saving Agent response to Mem0")
+        logging.info("Memory: Logging agent response.")
         asyncio.create_task(mem0.add(f"Jarvis said: {msg.content}", user_id=user_name))
 
-    # --- 4. START SESSION ---
+    # --- 4. SESSION START ---
     await session.start(
         room=ctx.room,
         agent=agent,
-        # REVERTED: Using RoomInputOptions to match your library version
-        room_input_options=RoomInputOptions(
-            video_enabled=True,
-        )
+        room_input_options=RoomInputOptions(video_enabled=True)
     )
 
-    logging.info("Jarvis Active.")
+    logging.info("Jarvis is fully operational.")
     await session.generate_reply() 
 
 if __name__ == "__main__":
