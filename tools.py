@@ -34,9 +34,8 @@ async def get_weather(city: str) -> str:
 
 @agents.function_tool(description="Send an email directly from Jarvis using Gmail SMTP.")
 async def send_email(to_email: str, subject: str, message: str, cc_email: Optional[str] = None) -> str:
-    """Sends a professional email via Gmail Port 465 (SSL)."""
+    """Sends a professional email via Gmail Port 465 (SSL) with a safety timeout."""
     def _blocking_send():
-        # Using standardized variable names
         gmail_user = os.getenv("GMAIL_USER")
         gmail_password = os.getenv("GMAIL_APP_PASSWORD")
         
@@ -55,27 +54,28 @@ async def send_email(to_email: str, subject: str, message: str, cc_email: Option
         recipients = [to_email] + ([cc_email] if cc_email else [])
         
         try:
-            # Port 465 is mandatory for SSL in many cloud environments
-            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            # Added a 15-second timeout to the SMTP connection itself
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as server:
                 server.login(gmail_user, gmail_password)
                 server.sendmail(gmail_user, recipients, msg.as_string())
-            return f"Success: Email sent to {to_email} via SSL."
+            return f"Success: Email sent to {to_email}."
         except Exception as smtp_err:
-            return f"SMTP Connection Error: {str(smtp_err)}"
+            return f"SMTP Error: {str(smtp_err)}"
 
     try: 
-        logging.info(f"Jarvis attempting to send email to {to_email}...")
-        result = await asyncio.to_thread(_blocking_send)
+        logging.info(f"Jarvis: Attempting email to {to_email}...")
+        # Wrap in wait_for to prevent the agent from hanging if SMTP is stuck
+        result = await asyncio.wait_for(asyncio.to_thread(_blocking_send), timeout=20.0)
         return result
+    except asyncio.TimeoutError:
+        return "Email failed: Connection to Gmail timed out. Please try again."
     except Exception as e: 
         return f"System Failure: {str(e)}"
 
 @agents.function_tool(description="Triggers mobile to open WhatsApp.")
 async def mobile_whatsapp(phone_number: str, message: str) -> str:
-    """Handshake tool for mobile WhatsApp automation."""
     return f"WhatsApp request for {phone_number} initiated. Message: {message}"
 
 @agents.function_tool(description="Triggers mobile to open Discord.")
 async def mobile_discord(message: str) -> str:
-    """Handshake tool for mobile Discord automation."""
     return "Discord uplink initiated."
