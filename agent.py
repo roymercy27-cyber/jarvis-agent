@@ -9,15 +9,16 @@ from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION 
-import tools # Import our updated tools.py
+import tools # Ensure tools.py is updated with @agents.function_tool
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
 from mcp_client.agent_tools import MCPToolsIntegration
 
 load_dotenv()
 
-# --- CODE INTERPRETER TOOL ---
-@llm.ai_callable(description="Runs Python code to solve math, process data, or debug logic.")
+# --- FIXED CODE INTERPRETER TOOL ---
+# Changed from @llm.ai_callable to @agents.function_tool
+@agents.function_tool(description="Runs Python code to solve math, process data, or debug logic.")
 def run_python_script(code: str):
     """Executes a python script in a separate process and returns the result."""
     try:
@@ -37,9 +38,9 @@ class Assistant(Agent):
             instructions=AGENT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
                 voice="Charon",
-                temperature=0.4, 
+                temperature=0.6, 
             ),
-            # Integrated all tools including the new direct email and python runner
+            # Tools imported from your updated tools.py
             tools=[
                 tools.get_weather, 
                 tools.search_web, 
@@ -77,6 +78,7 @@ async def entrypoint(ctx: agents.JobContext):
         if mcp_url:
             logging.info(f"Connecting to MCP at {mcp_url}...")
             mcp_server = MCPServerSse(params={"url": mcp_url}, name="SSE MCP Server")
+            # Using wait_for to prevent startup hang
             agent = await asyncio.wait_for(
                 MCPToolsIntegration.create_agent_with_tools(
                     agent_class=Assistant, 
@@ -103,7 +105,7 @@ async def entrypoint(ctx: agents.JobContext):
         agent=agent,
         room_input_options=RoomInputOptions(
             video_enabled=True,
-            # noise_cancellation=noise_cancellation.BVC(), # Disabled for free-tier stability
+            # noise_cancellation=noise_cancellation.BVC(), 
         ),
     )
 
@@ -113,7 +115,6 @@ async def entrypoint(ctx: agents.JobContext):
     # --- 4. SHUTDOWN CALLBACK ---
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
         logging.info("Shutting down... saving memory context.")
-        # Add your persistent memory saving logic here
         await asyncio.sleep(1)
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
