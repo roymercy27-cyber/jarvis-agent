@@ -3,7 +3,7 @@ import os
 import requests
 import smtplib
 import asyncio
-from livekit.agents import llm
+from livekit import agents # Use the main agents module for tools
 from tavily import TavilyClient
 from email.mime.multipart import MIMEMultipart  
 from email.mime.text import MIMEText
@@ -11,7 +11,7 @@ from typing import Optional
 
 tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
-@llm.ai_callable(description="CRITICAL: Use for factual queries or recent events.")
+@agents.function_tool(description="CRITICAL: Use for factual queries or recent events.")
 async def search_web(query: str) -> str:
     try:
         response = tavily.search(query=query, search_depth="advanced", max_results=3, include_answer=True)
@@ -21,7 +21,7 @@ async def search_web(query: str) -> str:
     except Exception as e:
         return f"Search error: {str(e)}"
 
-@llm.ai_callable(description="Get the current weather for a specific city.")
+@agents.function_tool(description="Get the current weather for a specific city.")
 async def get_weather(city: str) -> str:
     try:
         response = requests.get(f"https://wttr.in/{city}?format=%C+%t+with+wind+at+%w")
@@ -29,14 +29,14 @@ async def get_weather(city: str) -> str:
     except Exception as e:
         return f"Weather error: {str(e)}"
 
-@llm.ai_callable(description="Send an email directly from Jarvis using Gmail SMTP.")
+@agents.function_tool(description="Send an email directly from Jarvis using Gmail SMTP.")
 async def send_email(to_email: str, subject: str, message: str, cc_email: Optional[str] = None) -> str:
     def _blocking_send():
         gmail_user = os.getenv("GMAIL_USER") or os.getenv("EMAIL_SENDER")
         gmail_password = os.getenv("GMAIL_APP_PASSWORD") or os.getenv("EMAIL_APP_PASSWORD")
         
         if not gmail_user or not gmail_password: 
-            return "Email error: Credentials missing (GMAIL_USER/GMAIL_APP_PASSWORD)."
+            return "Email error: Credentials missing."
             
         msg = MIMEMultipart()
         msg['From'] = gmail_user
@@ -57,11 +57,10 @@ async def send_email(to_email: str, subject: str, message: str, cc_email: Option
     except Exception as e: 
         return f"Failed to send email: {str(e)}"
 
-@llm.ai_callable(description="Triggers mobile to open WhatsApp. phone_number must include country code.")
+@agents.function_tool(description="Triggers mobile to open WhatsApp.")
 async def mobile_whatsapp(phone_number: str, message: str) -> str:
-    # Note: In the new API, we use the local participant from the session or global context if available
-    return f"Jarvis is preparing a WhatsApp link for {phone_number}. (Command: {message})"
+    return f"WhatsApp request for {phone_number} initiated."
 
-@llm.ai_callable(description="Triggers mobile to open Discord.")
+@agents.function_tool(description="Triggers mobile to open Discord.")
 async def mobile_discord(message: str) -> str:
-    return "Initiating Discord uplink, sir."
+    return "Discord uplink initiated."
