@@ -6,7 +6,8 @@ import subprocess
 from dotenv import load_dotenv
 
 from livekit import agents
-from livekit.agents import AgentSession, Agent, RoomOptions, ChatContext, llm
+# REVERTED: Changed RoomOptions back to RoomInputOptions
+from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION 
 import tools 
@@ -31,7 +32,7 @@ class Assistant(Agent):
             llm=google.beta.realtime.RealtimeModel(
                 voice="Charon",
                 temperature=0.4,
-                # INCREASED THRESHOLD to prevent accidental interruptions during email sending
+                # Keeps the interruption protection
                 turn_detection=google.beta.realtime.VADOptions(
                     threshold=0.8, 
                     prefix_padding_ms=300,
@@ -79,20 +80,22 @@ async def entrypoint(ctx: agents.JobContext):
     # --- 3. REAL-TIME MEMORY LOGGING ---
     @session.on("user_speech_committed")
     def on_user_speech(msg: llm.ChatMessage):
-        # Logs memory the moment you finish speaking
         logging.info(f"Saving User Memory: {msg.content}")
         asyncio.create_task(mem0.add(msg.content, user_id=user_name))
 
     @session.on("agent_speech_committed")
     def on_agent_speech(msg: llm.ChatMessage):
-        # Logs what Jarvis said so he remembers his own promises/actions
         logging.info("Saving Agent response to Mem0")
         asyncio.create_task(mem0.add(f"Jarvis said: {msg.content}", user_id=user_name))
 
     # --- 4. START SESSION ---
     await session.start(
         room=ctx.room,
-        agent=agent
+        agent=agent,
+        # REVERTED: Using RoomInputOptions to match your library version
+        room_input_options=RoomInputOptions(
+            video_enabled=True,
+        )
     )
 
     logging.info("Jarvis Active.")
