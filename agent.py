@@ -21,6 +21,7 @@ load_dotenv()
 def run_python_script(code: str):
     """Executes a python script in a separate process and returns the result."""
     try:
+        # Executes in the current server environment
         result = subprocess.run(
             ['python3', '-c', code], 
             capture_output=True, 
@@ -39,6 +40,7 @@ class Assistant(Agent):
                 voice="Charon",
                 temperature=0.4, 
             ),
+            # Added run_python_script to the toolbelt
             tools=[get_weather, search_web, send_email, mobile_whatsapp, mobile_discord, run_python_script],
             chat_ctx=chat_ctx
         )
@@ -69,6 +71,7 @@ async def entrypoint(ctx: agents.JobContext):
         if mcp_url:
             logging.info(f"Connecting to MCP at {mcp_url}...")
             mcp_server = MCPServerSse(params={"url": mcp_url}, name="SSE MCP Server")
+            # Using wait_for to prevent infinite hanging if n8n is down
             agent = await asyncio.wait_for(
                 MCPToolsIntegration.create_agent_with_tools(
                     agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx}, mcp_servers=[mcp_server]
@@ -85,7 +88,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     @session.on("user_speech_committed")
     def on_user_speech(msg: llm.ChatMessage):
-        # FIX: Ensure content is a string before sending to Mem0
+        # FIX: Convert content to string so Mem0 can process it
         content_text = "".join(msg.content) if isinstance(msg.content, list) else str(msg.content)
         logging.info(f"Jarvis committing user speech: {content_text}")
         asyncio.create_task(mem0.add(content_text, user_id=user_name))
@@ -96,6 +99,7 @@ async def entrypoint(ctx: agents.JobContext):
         agent=agent,
         room_input_options=RoomInputOptions(
             video_enabled=True,
+            # noise_cancellation=noise_cancellation.BVC(), # Disabled to prevent 'Cloud Required' crash
         ),
     )
 
@@ -104,23 +108,22 @@ async def entrypoint(ctx: agents.JobContext):
 
     # --- 4. SHUTDOWN HOOK ---
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
-        logging.info("Shutting down... saving conversation to memory.")
+        logging.info("Shutting down... saving memory.")
+        # FIX: Extract and save the conversation history to Mem0
         messages_to_save = []
         for item in chat_ctx.items:
             if isinstance(item, llm.ChatMessage) and item.role in ['user', 'assistant']:
                 content = "".join(item.content) if isinstance(item.content, list) else str(item.content)
-                # Don't re-save the initial system context we injected
                 if memory_str and memory_str in content:
                     continue
                 messages_to_save.append({"role": item.role, "content": content})
         
         if messages_to_save:
             try:
-                # Use shield to ensure it finishes even if the process is closing
                 await asyncio.shield(mem0.add(messages_to_save, user_id=user_name))
-                logging.info("Conversation saved successfully.")
+                logging.info("Conversation saved to Mem0 successfully.")
             except Exception as e:
-                logging.error(f"Failed to save memory: {e}")
+                logging.error(f"Failed to save to Mem0: {e}")
         await asyncio.sleep(1)
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
