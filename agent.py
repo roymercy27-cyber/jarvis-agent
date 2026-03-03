@@ -9,19 +9,18 @@ from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION 
-from tools import get_weather, search_web, send_email, mobile_whatsapp, mobile_discord
+# Removed send_email from local imports
+from tools import get_weather, search_web, mobile_whatsapp, mobile_discord
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
 from mcp_client.agent_tools import MCPToolsIntegration
 
 load_dotenv()
 
-# --- NEW: CODE INTERPRETER TOOL ---
 @agents.function_tool(description="Runs Python code to solve math, process data, or debug logic.")
 def run_python_script(code: str):
     """Executes a python script in a separate process and returns the result."""
     try:
-        # Executes in the current server environment
         result = subprocess.run(
             ['python3', '-c', code], 
             capture_output=True, 
@@ -40,8 +39,8 @@ class Assistant(Agent):
                 voice="Charon",
                 temperature=0.4, 
             ),
-            # Added run_python_script to the toolbelt
-            tools=[get_weather, search_web, send_email, mobile_whatsapp, mobile_discord, run_python_script],
+            # send_email removed here; will be provided by MCP Tools Integration
+            tools=[get_weather, search_web, mobile_whatsapp, mobile_discord, run_python_script],
             chat_ctx=chat_ctx
         )
 
@@ -71,7 +70,6 @@ async def entrypoint(ctx: agents.JobContext):
         if mcp_url:
             logging.info(f"Connecting to MCP at {mcp_url}...")
             mcp_server = MCPServerSse(params={"url": mcp_url}, name="SSE MCP Server")
-            # Using wait_for to prevent infinite hanging if n8n is down
             agent = await asyncio.wait_for(
                 MCPToolsIntegration.create_agent_with_tools(
                     agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx}, mcp_servers=[mcp_server]
@@ -88,7 +86,6 @@ async def entrypoint(ctx: agents.JobContext):
 
     @session.on("user_speech_committed")
     def on_user_speech(msg: llm.ChatMessage):
-        # FIX: Convert content to string so Mem0 can process it
         content_text = "".join(msg.content) if isinstance(msg.content, list) else str(msg.content)
         logging.info(f"Jarvis committing user speech: {content_text}")
         asyncio.create_task(mem0.add(content_text, user_id=user_name))
@@ -99,7 +96,6 @@ async def entrypoint(ctx: agents.JobContext):
         agent=agent,
         room_input_options=RoomInputOptions(
             video_enabled=True,
-            # noise_cancellation=noise_cancellation.BVC(), # Disabled to prevent 'Cloud Required' crash
         ),
     )
 
@@ -109,7 +105,6 @@ async def entrypoint(ctx: agents.JobContext):
     # --- 4. SHUTDOWN HOOK ---
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
         logging.info("Shutting down... saving memory.")
-        # FIX: Extract and save the conversation history to Mem0
         messages_to_save = []
         for item in chat_ctx.items:
             if isinstance(item, llm.ChatMessage) and item.role in ['user', 'assistant']:
