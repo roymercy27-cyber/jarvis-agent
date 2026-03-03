@@ -2,31 +2,20 @@ import asyncio
 import os
 import json
 import logging
-import subprocess
 from dotenv import load_dotenv
 
-# Main LiveKit Imports
 from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
-from livekit.plugins import google
+from livekit.plugins import noise_cancellation, google
+# REMOVED SESSION_INSTRUCTION to fix the Railway crash
 from prompts import AGENT_INSTRUCTION 
-import tools 
-
-# Memory and Protocol Imports
+# Tool imports
+from tools import get_weather, search_web, send_email, mobile_whatsapp, mobile_discord
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
 from mcp_client.agent_tools import MCPToolsIntegration
 
 load_dotenv()
-
-@agents.function_tool(description="Runs Python code to solve math or process data.")
-def run_python_script(code: str):
-    """Executes code in a subprocess and returns stdout/stderr."""
-    try:
-        result = subprocess.run(['python3', '-c', code], capture_output=True, text=True, timeout=15)
-        return f"Output: {result.stdout}\nErrors: {result.stderr}"
-    except Exception as e:
-        return f"Execution Failed: {str(e)}"
 
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
@@ -34,23 +23,14 @@ class Assistant(Agent):
             instructions=AGENT_INSTRUCTION,
             llm=google.beta.realtime.RealtimeModel(
                 voice="Charon",
-                temperature=0.4,
-                # Strong VAD to prevent interruption during tool calls (emails)
-                turn_detection=google.beta.realtime.VADOptions(
-                    threshold=0.8, 
-                    prefix_padding_ms=300,
-                    silence_duration_ms=600
-                )
+                temperature=0.4, 
             ),
-            tools=[
-                tools.get_weather, tools.search_web, tools.send_email, 
-                tools.mobile_whatsapp, tools.mobile_discord, run_python_script
-            ],
+            # Added mobile_discord to your active toolbelt
+            tools=[get_weather, search_web, send_email, mobile_whatsapp, mobile_discord],
             chat_ctx=chat_ctx
         )
 
 async def entrypoint(ctx: agents.JobContext):
-    logging.info(f"Connecting to room: {ctx.room.name}")
     await ctx.connect()
     
     mem0 = AsyncMemoryClient()
@@ -59,51 +39,72 @@ async def entrypoint(ctx: agents.JobContext):
     # --- 1. MEMORY LOADING ---
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
+    memory_str = ""
     if results:
-        memories = [{"memory": r["memory"]} for r in results]
-        initial_ctx.add_message(role="assistant", content=f"User Context: {json.dumps(memories)}")
+        memories = [{"memory": r["memory"], "updated_at": r["updated_at"]} for r in results]
+        memory_str = json.dumps(memories)
+        logging.info(f"Loaded memories for {user_name}")
+        initial_ctx.add_message(
+            role="assistant", 
+            content=f"System Context: User is {user_name}. Past facts: {memory_str}"
+        )
 
-    # --- 2. MCP INTEGRATION ---
-    mcp_url = os.environ.get("N8N_MCP_SERVER_URL")
-    agent = None
-    if mcp_url:
-        try:
-            mcp_server = MCPServerSse(params={"url": mcp_url}, name="SSE MCP Server")
-            agent = await asyncio.wait_for(
-                MCPToolsIntegration.create_agent_with_tools(
-                    agent_class=Assistant, 
-                    agent_kwargs={"chat_ctx": initial_ctx}, 
-                    mcp_servers=[mcp_server]
-                ), timeout=12
-            )
-        except Exception as e:
-            logging.error(f"MCP Connection failed, falling back: {e}")
+    # --- 2. SHUTDOWN LOGGING ---
+    async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient, memory_str: str):
+        logging.info("Shutting down, saving chat context to memory...")
+        messages_formatted = []
+        
+        for item in chat_ctx.items:
+            if not isinstance(item, llm.ChatMessage):
+                continue
+            
+            content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
+            
+            if memory_str and memory_str in content_str:
+                continue
+            
+            if item.role in ['user', 'assistant']:
+                messages_formatted.append({
+                    "role": item.role,
+                    "content": content_str.strip()
+                })
+        
+        if messages_formatted:
+            try:
+                await asyncio.shield(mem0.add(messages_formatted, user_id="Ivan"))
+                logging.info("Chat context saved to Mem0 successfully.")
+            except Exception as e:
+                logging.error(f"Failed to save to Mem0: {e}")
+            
+            await asyncio.sleep(2)
 
-    if not agent:
-        agent = Assistant(chat_ctx=initial_ctx)
+    # n8n Integration
+    mcp_server = MCPServerSse(params={"url": os.environ.get("N8N_MCP_SERVER_URL")}, name="SSE MCP Server")
+    agent = await MCPToolsIntegration.create_agent_with_tools(
+        agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx}, mcp_servers=[mcp_server]
+    )
 
     session = AgentSession()
 
-    # --- 3. LIVE MEMORY CAPTURE ---
     @session.on("user_speech_committed")
     def on_user_speech(msg: llm.ChatMessage):
-        logging.info(f"Memory: Logging user input -> {msg.content[:50]}...")
+        logging.info(f"Jarvis is committing user speech: {msg.content}")
         asyncio.create_task(mem0.add(msg.content, user_id=user_name))
 
-    @session.on("agent_speech_committed")
-    def on_agent_speech(msg: llm.ChatMessage):
-        logging.info("Memory: Logging agent response.")
-        asyncio.create_task(mem0.add(f"Jarvis said: {msg.content}", user_id=user_name))
-
-    # --- 4. SESSION START ---
     await session.start(
         room=ctx.room,
         agent=agent,
-        room_input_options=RoomInputOptions(video_enabled=True)
+        room_input_options=RoomInputOptions(
+            video_enabled=True,
+            noise_cancellation=noise_cancellation.BVC(),
+        ),
     )
 
-    logging.info("Jarvis is fully operational.")
+    # UPDATED: We no longer pass SESSION_INSTRUCTION. 
+    # Jarvis uses the memory logic in the AGENT_INSTRUCTION to greet Ivan strategically.
     await session.generate_reply() 
 
+    ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0, memory_str))
+
 if __name__ == "__main__":
-    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
+    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=1))
