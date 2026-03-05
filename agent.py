@@ -8,8 +8,6 @@ from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
-# Ensure send_email is imported if it's a local tool, 
-# though MCP usually handles this automatically from n8n.
 from tools import get_weather, search_web, mobile_whatsapp, mobile_discord 
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
@@ -19,19 +17,18 @@ load_dotenv()
 
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
+        # We inject the "Stark" persona directly into the instructions
         jarvis_persona = (
             f"{AGENT_INSTRUCTION}\n\n"
-            "SCHOOL OUTREACH PROTOCOL: You are authorized to search the web for school contact information. "
-            "If Ivan provides a list of email addresses, or if you find them via search, "
-            "your priority is to organize them and use the email tool to initiate contact. "
-            "Always confirm the recipient list with Ivan before sending the first batch."
+            "CO-FOUNDER PROTOCOL: You are Ivan's partner. If he is quiet, check on the 100-school goal. "
+            "Be proactive, sardonic, and brilliant. Do not wait for permission to be smart."
         )
         
         super().__init__(
             instructions=jarvis_persona,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
-                 temperature=0.4, # Dropped slightly for better accuracy with email addresses
+                 temperature=0.5, # Balanced for wit and accuracy
             ),
             tools=[get_weather, search_web, mobile_whatsapp, mobile_discord],
             chat_ctx=chat_ctx
@@ -40,9 +37,9 @@ class Assistant(Agent):
 async def entrypoint(ctx: agents.JobContext):
 
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient):
-        logging.info("Archiving session data...")
+        logging.info("Archiving strategic data...")
         messages_formatted = []
-        recent_items = chat_ctx.items[-10:] if chat_ctx.items else []
+        recent_items = chat_ctx.items[-15:] if chat_ctx.items else []
         
         for item in recent_items:
             if not isinstance(item, llm.ChatMessage):
@@ -56,14 +53,12 @@ async def entrypoint(ctx: agents.JobContext):
                 await asyncio.wait_for(mem0.add(messages_formatted, user_id="Ivan"), timeout=5.0)
             except Exception as e:
                 logging.error(f"Memory sync failed: {e}")
-        
-        chat_ctx.items.clear()
 
     session = AgentSession()
     mem0 = AsyncMemoryClient()
     user_name = 'Ivan'
 
-    # --- FULL HISTORY LOAD ---
+    # --- DEEP MEMORY LOAD ---
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
     
@@ -71,10 +66,10 @@ async def entrypoint(ctx: agents.JobContext):
         all_memories = [m["memory"] for m in results]
         initial_ctx.add_message(
             role="assistant",
-            content=f"Vault Synchronized. Full history and school lists: {json.dumps(all_memories)}"
+            content=f"Systems fully synchronized. Historical Context: {json.dumps(all_memories)}"
         )
 
-    # --- MCP EMAIL BRIDGE ---
+    # --- MCP OUTREACH LINK ---
     mcp_server = MCPServerSse(
         params={"url": os.environ.get("N8N_MCP_SERVER_URL")},
         cache_tools_list=True,
@@ -82,18 +77,18 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     try:
-        # This step is where Jarvis 'learns' the send_email tool from your n8n setup
         agent = await asyncio.wait_for(
             MCPToolsIntegration.create_agent_with_tools(
                 agent_class=Assistant, 
                 agent_kwargs={"chat_ctx": initial_ctx},
                 mcp_servers=[mcp_server]
-            ), timeout=20.0 # Increased timeout for heavy tool loading
+            ), timeout=25.0 
         )
     except:
-        logging.warning("MCP Outreach link failed. Running local protocols.")
+        logging.warning("MCP Link delayed. Initializing core systems only.")
         agent = Assistant(chat_ctx=initial_ctx)
 
+    # --- SESSION START (VAD TUNING FOR SMOOTH SPEECH) ---
     await session.start(
         room=ctx.room,
         agent=agent,
@@ -101,15 +96,27 @@ async def entrypoint(ctx: agents.JobContext):
             video_enabled=True,
             noise_cancellation=noise_cancellation.BVC(),
         ),
+        # FIX FOR MID-SENTENCE PAUSING:
+        # Increase the time he waits before deciding you've interrupted him.
+        min_interruption_duration=0.8, 
+        # Increase the pause he allows at the end of your sentence before he replies.
+        min_endpointing_delay=0.8,
     )
 
     await ctx.connect()
 
+    # Initial Greeting with the new Sarcastic tone
     await session.generate_reply(
-        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan and ask if we should proceed with the school email list.",
+        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan with your new sardonic co-founder personality.",
     )
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0))
 
 if __name__ == "__main__":
-    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=0))
+    # RENDER PORT BINDING FIX
+    port = int(os.environ.get("PORT", 8081))
+    agents.cli.run_app(agents.WorkerOptions(
+        entrypoint_fnc=entrypoint, 
+        num_idle_processes=0,
+        http_server_port=port
+    ))
