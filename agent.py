@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
-from livekit.plugins import noise_cancellation, google
+from livekit.plugins import noise_cancellation, google, vad
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
 # Ensure send_email is imported if it's a local tool, 
 # though MCP usually handles this automatically from n8n.
@@ -94,7 +94,12 @@ async def entrypoint(ctx: agents.JobContext):
         logging.warning("MCP Outreach link failed. Running local protocols.")
         agent = Assistant(chat_ctx=initial_ctx)
 
-    # --- UPDATED SECTION: SENSITIVITY CALIBRATION ---
+    # --- CORRECT VAD IMPLEMENTATION ---
+    # We define the options here to prevent the TypeError
+    vad_options = vad.VADOptions(
+        min_interruption_duration=0.8,
+    )
+
     await session.start(
         room=ctx.room,
         agent=agent,
@@ -102,9 +107,8 @@ async def entrypoint(ctx: agents.JobContext):
             video_enabled=True,
             noise_cancellation=noise_cancellation.BVC(),
         ),
-        # These two lines prevent him from stopping in the middle of sentences
-        min_interruption_duration=0.8, 
-        min_endpointing_delay=0.8,
+        # Pass the options correctly through the session
+        vad_options=vad_options
     )
 
     await ctx.connect()
