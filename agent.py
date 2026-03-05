@@ -6,10 +6,8 @@ from dotenv import load_dotenv
 
 from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
-from livekit.plugins import noise_cancellation, google, vad
+from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
-# Ensure send_email is imported if it's a local tool, 
-# though MCP usually handles this automatically from n8n.
 from tools import get_weather, search_web, mobile_whatsapp, mobile_discord 
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
@@ -31,7 +29,7 @@ class Assistant(Agent):
             instructions=jarvis_persona,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
-                 temperature=0.4, # Dropped slightly for better accuracy with email addresses
+                 temperature=0.4, 
             ),
             tools=[get_weather, search_web, mobile_whatsapp, mobile_discord],
             chat_ctx=chat_ctx
@@ -82,24 +80,20 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     try:
-        # This step is where Jarvis 'learns' the send_email tool from your n8n setup
         agent = await asyncio.wait_for(
             MCPToolsIntegration.create_agent_with_tools(
                 agent_class=Assistant, 
                 agent_kwargs={"chat_ctx": initial_ctx},
                 mcp_servers=[mcp_server]
-            ), timeout=20.0 # Increased timeout for heavy tool loading
+            ), timeout=20.0 
         )
     except:
         logging.warning("MCP Outreach link failed. Running local protocols.")
         agent = Assistant(chat_ctx=initial_ctx)
 
-    # --- CORRECT VAD IMPLEMENTATION ---
-    # We define the options here to prevent the TypeError
-    vad_options = vad.VADOptions(
-        min_interruption_duration=0.8,
-    )
-
+    # --- THE CLEAN FIX ---
+    # We pass the timing parameters directly to the session start.
+    # This prevents Jarvis from cutting off mid-sentence.
     await session.start(
         room=ctx.room,
         agent=agent,
@@ -107,8 +101,8 @@ async def entrypoint(ctx: agents.JobContext):
             video_enabled=True,
             noise_cancellation=noise_cancellation.BVC(),
         ),
-        # Pass the options correctly through the session
-        vad_options=vad_options
+        min_interruption_duration=0.8,
+        min_endpointing_delay=0.8
     )
 
     await ctx.connect()
