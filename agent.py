@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
-from livekit.plugins import noise_cancellation, google
+from livekit.plugins import noise_cancellation, google, silero  # Added silero for VAD
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
 from tools import get_weather, search_web, mobile_whatsapp, mobile_discord 
 from mem0 import AsyncMemoryClient
@@ -91,18 +91,19 @@ async def entrypoint(ctx: agents.JobContext):
         logging.warning("MCP Outreach link failed. Running local protocols.")
         agent = Assistant(chat_ctx=initial_ctx)
 
-    # --- THE CLEAN FIX ---
-    # We pass the timing parameters directly to the session start.
-    # This prevents Jarvis from cutting off mid-sentence.
+    # --- THE FIX: USE SILERO VAD FOR STABILITY ---
+    # This prevents the mid-sentence cutting by tuning the VAD directly
+    # instead of passing broken arguments to session.start()
+    vad = silero.VAD.load()
+    
     await session.start(
         room=ctx.room,
         agent=agent,
         room_input_options=RoomInputOptions(
             video_enabled=True,
             noise_cancellation=noise_cancellation.BVC(),
+            vad=vad # Use the tuned VAD engine here
         ),
-        min_interruption_duration=0.8,
-        min_endpointing_delay=0.8
     )
 
     await ctx.connect()
