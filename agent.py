@@ -17,7 +17,7 @@ load_dotenv()
 
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
-        # We inject the "Stark" persona directly into the instructions
+        # Injected the "Stark Protocol" directly into the brain
         jarvis_persona = (
             f"{AGENT_INSTRUCTION}\n\n"
             "CO-FOUNDER PROTOCOL: You are Ivan's partner. If he is quiet, check on the 100-school goal. "
@@ -28,7 +28,7 @@ class Assistant(Agent):
             instructions=jarvis_persona,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
-                 temperature=0.5, # Balanced for wit and accuracy
+                 temperature=0.5, 
             ),
             tools=[get_weather, search_web, mobile_whatsapp, mobile_discord],
             chat_ctx=chat_ctx
@@ -88,7 +88,7 @@ async def entrypoint(ctx: agents.JobContext):
         logging.warning("MCP Link delayed. Initializing core systems only.")
         agent = Assistant(chat_ctx=initial_ctx)
 
-    # --- SESSION START (VAD TUNING FOR SMOOTH SPEECH) ---
+    # --- VAD TUNING: This stops the mid-sentence pauses ---
     await session.start(
         room=ctx.room,
         agent=agent,
@@ -96,27 +96,26 @@ async def entrypoint(ctx: agents.JobContext):
             video_enabled=True,
             noise_cancellation=noise_cancellation.BVC(),
         ),
-        # FIX FOR MID-SENTENCE PAUSING:
-        # Increase the time he waits before deciding you've interrupted him.
-        min_interruption_duration=0.8, 
-        # Increase the pause he allows at the end of your sentence before he replies.
-        min_endpointing_delay=0.8,
+        min_interruption_duration=0.8, # More stubborn, won't stop for breaths
+        min_endpointing_delay=0.8,     # Gives you space to think before he speaks
     )
 
     await ctx.connect()
 
-    # Initial Greeting with the new Sarcastic tone
     await session.generate_reply(
-        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan with your new sardonic co-founder personality.",
+        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan and sarcastically ask about the school outreach progress.",
     )
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0))
 
 if __name__ == "__main__":
-    # RENDER PORT BINDING FIX
-    port = int(os.environ.get("PORT", 8081))
-    agents.cli.run_app(agents.WorkerOptions(
-        entrypoint_fnc=entrypoint, 
-        num_idle_processes=0,
-        http_server_port=port
-    ))
+    # FIX: We set the port here via environment variable before the app starts.
+    # This avoids the TypeError you saw while satisfying Render's port check.
+    os.environ["LIVEKIT_HTTP_PORT"] = os.environ.get("PORT", "8081")
+
+    agents.cli.run_app(
+        agents.WorkerOptions(
+            entrypoint_fnc=entrypoint, 
+            num_idle_processes=0
+        )
+    )
