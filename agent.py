@@ -8,8 +8,6 @@ from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
 from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
-# Ensure send_email is imported if it's a local tool, 
-# though MCP usually handles this automatically from n8n.
 from tools import get_weather, search_web, mobile_whatsapp, mobile_discord 
 from mem0 import AsyncMemoryClient
 from mcp_client import MCPServerSse
@@ -31,34 +29,30 @@ class Assistant(Agent):
             instructions=jarvis_persona,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
-                 temperature=0.4, # Dropped slightly for better accuracy with email addresses
+                 temperature=0.4, 
             ),
             tools=[get_weather, search_web, mobile_whatsapp, mobile_discord],
             chat_ctx=chat_ctx
         )
 
 async def entrypoint(ctx: agents.JobContext):
-    # MOVE CONNECT TO TOP: This makes Jarvis join the room instantly
+    # FIX 1: Join the room immediately so you don't wait 20 seconds
     await ctx.connect()
 
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient):
         logging.info("Archiving session data...")
         messages_formatted = []
         recent_items = chat_ctx.items[-10:] if chat_ctx.items else []
-        
         for item in recent_items:
-            if not isinstance(item, llm.ChatMessage):
-                continue
+            if not isinstance(item, llm.ChatMessage): continue
             content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
             if item.role in ['user', 'assistant']:
                 messages_formatted.append({"role": item.role, "content": content_str.strip()})
-        
         if messages_formatted:
             try:
                 await asyncio.wait_for(mem0.add(messages_formatted, user_id="Ivan"), timeout=5.0)
             except Exception as e:
                 logging.error(f"Memory sync failed: {e}")
-        
         chat_ctx.items.clear()
 
     session = AgentSession()
@@ -68,7 +62,6 @@ async def entrypoint(ctx: agents.JobContext):
     # --- FULL HISTORY LOAD ---
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
-    
     if results:
         all_memories = [m["memory"] for m in results]
         initial_ctx.add_message(
@@ -84,7 +77,6 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     try:
-        # Load tools while already in the room to save perceived time
         agent = await asyncio.wait_for(
             MCPToolsIntegration.create_agent_with_tools(
                 agent_class=Assistant, 
@@ -96,8 +88,7 @@ async def entrypoint(ctx: agents.JobContext):
         logging.warning("MCP Outreach link failed. Running local protocols.")
         agent = Assistant(chat_ctx=initial_ctx)
 
-    # VAD TUNING: Added min_interruption_duration and min_endpointing_delay
-    # This prevents him from stopping in the middle of sentences.
+    # FIX 2: Added VAD tuning to stop mid-sentence cutting
     await session.start(
         room=ctx.room,
         agent=agent,
@@ -105,8 +96,8 @@ async def entrypoint(ctx: agents.JobContext):
             video_enabled=True,
             noise_cancellation=noise_cancellation.BVC(),
         ),
-        min_interruption_duration=0.8,
-        min_endpointing_delay=0.8,
+        min_interruption_duration=0.8, # Makes him finish his sentences
+        min_endpointing_delay=0.8,     # Gives you more time to speak
     )
 
     await session.generate_reply(
@@ -116,8 +107,6 @@ async def entrypoint(ctx: agents.JobContext):
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0))
 
 if __name__ == "__main__":
-    # RENDER PORT FIX: Ensuring Render sees the service as healthy immediately
-    import os
+    # Render/Railway Port Fix
     os.environ["LIVEKIT_HTTP_PORT"] = os.environ.get("PORT", "8081")
-    
     agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=0))
