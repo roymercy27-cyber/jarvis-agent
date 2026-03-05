@@ -20,9 +20,7 @@ class Assistant(Agent):
         jarvis_persona = (
             f"{AGENT_INSTRUCTION}\n\n"
             "SCHOOL OUTREACH PROTOCOL: You are authorized to search the web for school contact information. "
-            "If Ivan provides a list of email addresses, or if you find them via search, "
-            "your priority is to organize them and use the email tool to initiate contact. "
-            "Always confirm the recipient list with Ivan before sending the first batch."
+            "If Ivan provides a list of email addresses, your priority is to organize them and use the email tool."
         )
         
         super().__init__(
@@ -36,11 +34,62 @@ class Assistant(Agent):
         )
 
 async def entrypoint(ctx: agents.JobContext):
-    # FIX 1: Join the room immediately so you don't wait 20 seconds
+    # Setup infrastructure first
+    session = AgentSession()
+    mem0 = AsyncMemoryClient()
+    user_name = 'Ivan'
+
+    # --- 1. QUICK MEMORY LOAD ---
+    results = await mem0.get_all(user_id=user_name)
+    initial_ctx = ChatContext()
+    if results:
+        all_memories = [m["memory"] for m in results]
+        initial_ctx.add_message(
+            role="assistant",
+            content=f"Vault Synchronized: {json.dumps(all_memories)}"
+        )
+
+    # --- 2. TOOL LOADING (With a shorter timeout) ---
+    mcp_server = MCPServerSse(
+        params={"url": os.environ.get("N8N_MCP_SERVER_URL")},
+        cache_tools_list=True,
+        name="Jarvis-Outreach-Link"
+    )
+
+    try:
+        # Reduced timeout to 10s so Jarvis joins the room faster even if n8n is slow
+        agent = await asyncio.wait_for(
+            MCPToolsIntegration.create_agent_with_tools(
+                agent_class=Assistant, 
+                agent_kwargs={"chat_ctx": initial_ctx},
+                mcp_servers=[mcp_server]
+            ), timeout=10.0 
+        )
+    except:
+        logging.warning("MCP timed out. Entering room with local protocols.")
+        agent = Assistant(chat_ctx=initial_ctx)
+
+    # --- 3. START SESSION (VAD FIXED: Stops the mid-sentence cutting) ---
+    await session.start(
+        room=ctx.room,
+        agent=agent,
+        room_input_options=RoomInputOptions(
+            video_enabled=True,
+            noise_cancellation=noise_cancellation.BVC(),
+        ),
+        # This prevents him from stopping mid-sentence
+        min_interruption_duration=0.8,
+        min_endpointing_delay=0.8,
+    )
+
+    # --- 4. THE CONNECTION (The working "Discord" style) ---
     await ctx.connect()
 
+    await session.generate_reply(
+        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan and ask about the school outreach.",
+    )
+
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient):
-        logging.info("Archiving session data...")
         messages_formatted = []
         recent_items = chat_ctx.items[-10:] if chat_ctx.items else []
         for item in recent_items:
@@ -49,64 +98,12 @@ async def entrypoint(ctx: agents.JobContext):
             if item.role in ['user', 'assistant']:
                 messages_formatted.append({"role": item.role, "content": content_str.strip()})
         if messages_formatted:
-            try:
-                await asyncio.wait_for(mem0.add(messages_formatted, user_id="Ivan"), timeout=5.0)
-            except Exception as e:
-                logging.error(f"Memory sync failed: {e}")
-        chat_ctx.items.clear()
-
-    session = AgentSession()
-    mem0 = AsyncMemoryClient()
-    user_name = 'Ivan'
-
-    # --- FULL HISTORY LOAD ---
-    results = await mem0.get_all(user_id=user_name)
-    initial_ctx = ChatContext()
-    if results:
-        all_memories = [m["memory"] for m in results]
-        initial_ctx.add_message(
-            role="assistant",
-            content=f"Vault Synchronized. Full history and school lists: {json.dumps(all_memories)}"
-        )
-
-    # --- MCP EMAIL BRIDGE ---
-    mcp_server = MCPServerSse(
-        params={"url": os.environ.get("N8N_MCP_SERVER_URL")},
-        cache_tools_list=True,
-        name="Jarvis-Outreach-Link"
-    )
-
-    try:
-        agent = await asyncio.wait_for(
-            MCPToolsIntegration.create_agent_with_tools(
-                agent_class=Assistant, 
-                agent_kwargs={"chat_ctx": initial_ctx},
-                mcp_servers=[mcp_server]
-            ), timeout=20.0 
-        )
-    except:
-        logging.warning("MCP Outreach link failed. Running local protocols.")
-        agent = Assistant(chat_ctx=initial_ctx)
-
-    # FIX 2: Added VAD tuning to stop mid-sentence cutting
-    await session.start(
-        room=ctx.room,
-        agent=agent,
-        room_input_options=RoomInputOptions(
-            video_enabled=True,
-            noise_cancellation=noise_cancellation.BVC(),
-        ),
-        min_interruption_duration=0.8, # Makes him finish his sentences
-        min_endpointing_delay=0.8,     # Gives you more time to speak
-    )
-
-    await session.generate_reply(
-        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan and ask if we should proceed with the school email list.",
-    )
+            try: await mem0.add(messages_formatted, user_id="Ivan")
+            except: pass
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0))
 
 if __name__ == "__main__":
-    # Render/Railway Port Fix
+    # Ensure Port Binding for Railway/Render
     os.environ["LIVEKIT_HTTP_PORT"] = os.environ.get("PORT", "8081")
     agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=0))
