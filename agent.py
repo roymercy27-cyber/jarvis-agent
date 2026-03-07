@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
-from livekit.plugins import noise_cancellation, google, silero
+from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
 from tools import get_weather, search_web, mobile_whatsapp, mobile_discord 
 from mem0 import AsyncMemoryClient
@@ -27,19 +27,21 @@ class Assistant(Agent):
             instructions=jarvis_persona,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
-                 temperature=0.4, 
+                 temperature=0.4,
+                 # --- FIX FOR CUTTING OUT ---
+                 # This tells the model to wait for a longer pause before stopping
+                 min_endpointing_delay=0.8, 
             ),
             tools=[get_weather, search_web, mobile_whatsapp, mobile_discord],
             chat_ctx=chat_ctx
         )
 
 async def entrypoint(ctx: agents.JobContext):
-    # Setup infrastructure
     session = AgentSession()
     mem0 = AsyncMemoryClient()
     user_name = 'Ivan'
 
-    # --- 1. PRE-LOAD BRAIN ---
+    # 1. Load History
     results = await mem0.get_all(user_id=user_name)
     initial_ctx = ChatContext()
     if results:
@@ -49,7 +51,7 @@ async def entrypoint(ctx: agents.JobContext):
             content=f"Vault Synchronized: {json.dumps(all_memories)}"
         )
 
-    # --- 2. PRE-LOAD TOOLS (Timeout kept tight to prevent hanging) ---
+    # 2. MCP Tool Loading (Standard logic)
     mcp_server = MCPServerSse(
         params={"url": os.environ.get("N8N_MCP_SERVER_URL")},
         cache_tools_list=True,
@@ -62,39 +64,29 @@ async def entrypoint(ctx: agents.JobContext):
                 agent_class=Assistant, 
                 agent_kwargs={"chat_ctx": initial_ctx},
                 mcp_servers=[mcp_server]
-            ), timeout=10.0 # Don't let MCP stall the entrance
+            ), timeout=15.0 
         )
-    except Exception:
-        logging.warning("MCP load failed/timed out. Using core protocols.")
+    except:
         agent = Assistant(chat_ctx=initial_ctx)
 
-    # --- 3. THE FIX: SILERO VAD PRE-LOAD ---
-    # We load Silero here to fix the mid-sentence cutting without a TypeError
-    try:
-        vad_plugin = silero.VAD.load()
-    except:
-        vad_plugin = None
-
-    # --- 4. START SESSION (The order you know works) ---
+    # 3. Session Start (Removed the arguments causing your TypeError)
     await session.start(
         room=ctx.room,
         agent=agent,
         room_input_options=RoomInputOptions(
             video_enabled=True,
             noise_cancellation=noise_cancellation.BVC(),
-            vad=vad_plugin # This is the internal fix for cutting out
         ),
     )
 
-    # --- 5. ENTER THE ROOM ---
+    # 4. Room Connection
     await ctx.connect()
 
-    # --- 6. GREETING ---
+    # 5. Initial Greeting
     await session.generate_reply(
-        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan. Mention the 100 schools target.",
+        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan and mention the 100 schools target.",
     )
 
-    # --- SHUTDOWN PROTOCOL ---
     async def shutdown_hook(chat_ctx: ChatContext, mem0: AsyncMemoryClient):
         messages_formatted = []
         recent_items = chat_ctx.items[-10:] if chat_ctx.items else []
@@ -110,5 +102,4 @@ async def entrypoint(ctx: agents.JobContext):
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0))
 
 if __name__ == "__main__":
-    os.environ["LIVEKIT_HTTP_PORT"] = os.environ.get("PORT", "8081")
     agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint, num_idle_processes=0))
