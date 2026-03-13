@@ -62,7 +62,7 @@ class Assistant(Agent):
 
                  voice="Charon",
 
-                 temperature=0.4, # Dropped slightly for better accuracy with email addresses
+                 temperature=0.8, # Dropped slightly for better accuracy with email addresses
 
             ),
 
