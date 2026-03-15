@@ -7,8 +7,11 @@ import uvicorn
 from dotenv import load_dotenv
 
 from livekit import agents
-from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm, Worker
+from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
+# This is the precise path for the Worker class in your version
+from livekit.agents.worker import Worker 
 from livekit.plugins import noise_cancellation, google
+
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
 from tools import get_weather, search_web, mobile_whatsapp, mobile_discord 
 from mem0 import AsyncMemoryClient
@@ -22,7 +25,7 @@ app = FastAPI()
 
 @app.get("/healthz")
 async def health_check():
-    """Endpoint for Render health checks and heartbeat."""
+    """Render and cron-job.org heartbeat."""
     return {"status": "online", "agent": "Jarvis"}
 
 # --- PART 2: THE ASSISTANT ---
@@ -94,8 +97,7 @@ async def main():
     # Use the port Render provides
     port = int(os.environ.get("PORT", 8080))
     
-    # 1. Initialize the LiveKit Worker manually
-    # This bypasses the CLI and prevents the "Missing command" error
+    # 1. Initialize the LiveKit Worker from the submodule
     options = agents.WorkerOptions(entrypoint_fnc=entrypoint)
     worker = Worker(options)
     
@@ -103,8 +105,8 @@ async def main():
     config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(config)
     
-    # 3. Run both concurrently in the same event loop
-    logging.info(f"System Online. Starting Jarvis on port {port}...")
+    # 3. Run both concurrently
+    logging.info(f"Jarvis Protocol initiating on port {port}...")
     await asyncio.gather(
         worker.run(),
         server.serve()
