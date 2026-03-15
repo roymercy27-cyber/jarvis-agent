@@ -27,13 +27,11 @@ app = FastAPI()
 async def health_check():
     return {"status": "online", "agent": "Jarvis"}
 
-# --- PART 2: SELF-EVOLUTION TOOLS ---
+# --- PART 2: SELF-EVOLUTION FUNCTION ---
 
-# FIXED DECORATOR: Using the correct path for ai_callable
-@llm.ai_callable(description="Download and install a new Python library to gain a new skill.")
-async def evolve_capability(package_name: llm.Annotated[str, "The name of the python package to install via pip"]):
+async def evolve_capability(package_name: str):
+    """Download and install a new Python library to gain a new skill."""
     try:
-        # Install the package using pip
         subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
         importlib.invalidate_caches()
         return f"System Update Complete: I have acquired the '{package_name}' capability."
@@ -44,20 +42,24 @@ class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
         jarvis_persona = (
             f"{AGENT_INSTRUCTION}\n\n"
-            "RECURSIVE EVOLUTION PROTOCOL: If a task requires a tool or library you do not currently possess, "
-            "1. Use 'search_web' to find the best Python library. "
-            "2. Use 'evolve_capability' to download it. "
-            "3. Execute code to finish the task.\n\n"
-            "SCHOOL OUTREACH PROTOCOL: Organize school lists and confirm with Ivan before sending."
+            "RECURSIVE EVOLUTION PROTOCOL: If you lack a tool for a task:\n"
+            "1. Search the web for a Python library.\n"
+            "2. Use 'evolve_capability' to install it.\n"
+            "3. Complete the task using the new library.\n\n"
+            "SCHOOL OUTREACH PROTOCOL: Organize lists and confirm with Ivan before sending."
         )
         
+        # We manually define the tool here to avoid decorator errors
+        evolve_tool = llm.FunctionContext()
+        evolve_tool.ai_callable(description="Install a python package")(evolve_capability)
+
         super().__init__(
             instructions=jarvis_persona,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
                  temperature=0.8, 
             ),
-            tools=[get_weather, search_web, mobile_whatsapp, mobile_discord, evolve_capability],
+            tools=[get_weather, search_web, mobile_whatsapp, mobile_discord, evolve_tool],
             chat_ctx=chat_ctx
         )
 
@@ -121,7 +123,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0))
 
-# --- PART 3: MODERN STARTUP FIX ---
+# --- PART 3: MODERN STARTUP ---
 async def main():
     port = int(os.environ.get("PORT", 8080))
     
@@ -131,7 +133,6 @@ async def main():
     server_config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(server_config)
     
-    # Running both concurrently in the same event loop
     await asyncio.gather(
         server.serve(),
         worker.run()
