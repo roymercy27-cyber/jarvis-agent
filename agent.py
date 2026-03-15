@@ -20,18 +20,18 @@ from mcp_client.agent_tools import MCPToolsIntegration
 
 load_dotenv()
 
-# --- PART 1: THE WEB SERVER (The Doorbell) ---
+# --- PART 1: THE WEB SERVER ---
 app = FastAPI()
 
 @app.get("/healthz")
 async def health_check():
-    """Endpoint for cron-job.org to ping."""
     return {"status": "online", "agent": "Jarvis"}
 
-# --- PART 2: THE SELF-EVOLVING ASSISTANT ---
+# --- PART 2: SELF-EVOLUTION TOOLS ---
 
+# FIXED DECORATOR: Using the correct path for ai_callable
 @llm.ai_callable(description="Download and install a new Python library to gain a new skill.")
-async def evolve_capability(package_name: str):
+async def evolve_capability(package_name: llm.Annotated[str, "The name of the python package to install via pip"]):
     try:
         # Install the package using pip
         subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
@@ -45,11 +45,10 @@ class Assistant(Agent):
         jarvis_persona = (
             f"{AGENT_INSTRUCTION}\n\n"
             "RECURSIVE EVOLUTION PROTOCOL: If a task requires a tool or library you do not currently possess, "
-            "1. Use 'search_web' to find the best Python library for the job. "
+            "1. Use 'search_web' to find the best Python library. "
             "2. Use 'evolve_capability' to download it. "
-            "3. Execute the code to complete the task.\n\n"
-            "SCHOOL OUTREACH PROTOCOL: Priority is organizing school contact lists. "
-            "Confirm recipient lists with Ivan before sending batches."
+            "3. Execute code to finish the task.\n\n"
+            "SCHOOL OUTREACH PROTOCOL: Organize school lists and confirm with Ivan before sending."
         )
         
         super().__init__(
@@ -58,7 +57,6 @@ class Assistant(Agent):
                  voice="Charon",
                  temperature=0.8, 
             ),
-            # Added evolve_capability to his toolset
             tools=[get_weather, search_web, mobile_whatsapp, mobile_discord, evolve_capability],
             chat_ctx=chat_ctx
         )
@@ -123,7 +121,7 @@ async def entrypoint(ctx: agents.JobContext):
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0))
 
-# --- PART 3: THE MODERN STARTUP FIX ---
+# --- PART 3: MODERN STARTUP FIX ---
 async def main():
     port = int(os.environ.get("PORT", 8080))
     
@@ -133,7 +131,7 @@ async def main():
     server_config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(server_config)
     
-    # This runs the web server and the voice agent in the same event loop
+    # Running both concurrently in the same event loop
     await asyncio.gather(
         server.serve(),
         worker.run()
@@ -142,5 +140,5 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         pass
