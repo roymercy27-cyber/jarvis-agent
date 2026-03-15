@@ -2,11 +2,12 @@ import asyncio
 import os
 import json
 import logging
-from dotenv import load_dotenv
-
-# New imports for the Keep-Alive server
+import subprocess
+import sys
+import importlib
 from fastapi import FastAPI
 import uvicorn
+from dotenv import load_dotenv
 
 from livekit import agents
 from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
@@ -27,15 +28,28 @@ async def health_check():
     """Endpoint for cron-job.org to ping."""
     return {"status": "online", "agent": "Jarvis"}
 
-# --- PART 2: YOUR ASSISTANT LOGIC ---
+# --- PART 2: THE SELF-EVOLVING ASSISTANT ---
+
+@llm.ai_callable(description="Download and install a new Python library to gain a new skill.")
+async def evolve_capability(package_name: str):
+    try:
+        # Install the package using pip
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
+        importlib.invalidate_caches()
+        return f"System Update Complete: I have acquired the '{package_name}' capability."
+    except Exception as e:
+        return f"Evolution failed: Could not acquire '{package_name}'. Error: {str(e)}"
+
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
         jarvis_persona = (
             f"{AGENT_INSTRUCTION}\n\n"
-            "SCHOOL OUTREACH PROTOCOL: You are authorized to search the web for school contact information. "
-            "If Ivan provides a list of email addresses, or if you find them via search, "
-            "your priority is to organize them and use the email tool to initiate contact. "
-            "Always confirm the recipient list with Ivan before sending the first batch."
+            "RECURSIVE EVOLUTION PROTOCOL: If a task requires a tool or library you do not currently possess, "
+            "1. Use 'search_web' to find the best Python library for the job. "
+            "2. Use 'evolve_capability' to download it. "
+            "3. Execute the code to complete the task.\n\n"
+            "SCHOOL OUTREACH PROTOCOL: Priority is organizing school contact lists. "
+            "Confirm recipient lists with Ivan before sending batches."
         )
         
         super().__init__(
@@ -44,7 +58,8 @@ class Assistant(Agent):
                  voice="Charon",
                  temperature=0.8, 
             ),
-            tools=[get_weather, search_web, mobile_whatsapp, mobile_discord],
+            # Added evolve_capability to his toolset
+            tools=[get_weather, search_web, mobile_whatsapp, mobile_discord, evolve_capability],
             chat_ctx=chat_ctx
         )
 
@@ -54,16 +69,13 @@ async def entrypoint(ctx: agents.JobContext):
         messages_formatted = []
         recent_items = chat_ctx.items[-10:] if chat_ctx.items else []
         for item in recent_items:
-            if not isinstance(item, llm.ChatMessage):
-                continue
+            if not isinstance(item, llm.ChatMessage): continue
             content_str = ''.join(item.content) if isinstance(item.content, list) else str(item.content)
             if item.role in ['user', 'assistant']:
                 messages_formatted.append({"role": item.role, "content": content_str.strip()})
         if messages_formatted:
-            try:
-                await asyncio.wait_for(mem0.add(messages_formatted, user_id="Ivan"), timeout=5.0)
-            except Exception as e:
-                logging.error(f"Memory sync failed: {e}")
+            try: await asyncio.wait_for(mem0.add(messages_formatted, user_id="Ivan"), timeout=5.0)
+            except Exception as e: logging.error(f"Memory sync failed: {e}")
         chat_ctx.items.clear()
 
     session = AgentSession()
@@ -76,7 +88,7 @@ async def entrypoint(ctx: agents.JobContext):
         all_memories = [m["memory"] for m in results]
         initial_ctx.add_message(
             role="assistant",
-            content=f"Vault Synchronized. Full history and school lists: {json.dumps(all_memories)}"
+            content=f"Vault Synchronized. Context: {json.dumps(all_memories)}"
         )
 
     mcp_server = MCPServerSse(
@@ -94,7 +106,6 @@ async def entrypoint(ctx: agents.JobContext):
             ), timeout=20.0 
         )
     except:
-        logging.warning("MCP Outreach link failed. Running local protocols.")
         agent = Assistant(chat_ctx=initial_ctx)
 
     await session.start(
@@ -107,32 +118,29 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     await ctx.connect()
-    
-    # --- INSTANT RESPONSE HACK ---
-    # This greets you immediately while the brain is still loading context
     await session.say("Ready and waiting, Sir.", allow_interruptions=False)
-
-    await session.generate_reply(
-        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan and ask if we should proceed with the school email list.",
-    )
+    await session.generate_reply()
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0))
 
-# --- PART 3: THE RENDER STARTUP ---
-if __name__ == "__main__":
-    # Start the LiveKit agent in a background task
-    loop = asyncio.get_event_loop()
-    
-    # Render provides the PORT env var automatically
+# --- PART 3: THE MODERN STARTUP FIX ---
+async def main():
     port = int(os.environ.get("PORT", 8080))
     
-    # Run the worker and the web server together
-    # Note: cli.run_app normally blocks, so we use a custom run logic for Render
-    from livekit.agents import WorkerOptions
-    options = WorkerOptions(entrypoint_fnc=entrypoint)
+    options = agents.WorkerOptions(entrypoint_fnc=entrypoint)
+    worker = agents.cli.AgentWorker(options)
     
-    # Start the Agent Worker in the background
-    asyncio.ensure_future(agents.cli.run_app(options))
+    server_config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(server_config)
     
-    # Start the Web Server (This is what Cron-job.org hits)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    # This runs the web server and the voice agent in the same event loop
+    await asyncio.gather(
+        server.serve(),
+        worker.run()
+    )
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
