@@ -2,9 +2,6 @@ import asyncio
 import os
 import json
 import logging
-import subprocess
-import sys
-import importlib
 from fastapi import FastAPI
 import uvicorn
 from dotenv import load_dotenv
@@ -20,46 +17,31 @@ from mcp_client.agent_tools import MCPToolsIntegration
 
 load_dotenv()
 
-# --- PART 1: THE WEB SERVER ---
+# --- PART 1: THE WEB SERVER (For Render & Cron-job.org) ---
 app = FastAPI()
 
 @app.get("/healthz")
 async def health_check():
+    """Endpoint for cron-job.org to ping."""
     return {"status": "online", "agent": "Jarvis"}
 
-# --- PART 2: SELF-EVOLUTION FUNCTION ---
-
-async def evolve_capability(package_name: str):
-    """Download and install a new Python library to gain a new skill."""
-    try:
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
-        importlib.invalidate_caches()
-        return f"System Update Complete: I have acquired the '{package_name}' capability."
-    except Exception as e:
-        return f"Evolution failed: Could not acquire '{package_name}'. Error: {str(e)}"
-
+# --- PART 2: ASSISTANT LOGIC ---
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
         jarvis_persona = (
             f"{AGENT_INSTRUCTION}\n\n"
-            "RECURSIVE EVOLUTION PROTOCOL: If you lack a tool for a task:\n"
-            "1. Search the web for a Python library.\n"
-            "2. Use 'evolve_capability' to install it.\n"
-            "3. Complete the task using the new library.\n\n"
-            "SCHOOL OUTREACH PROTOCOL: Organize lists and confirm with Ivan before sending."
+            "SCHOOL OUTREACH PROTOCOL: Authorized to search for school contact info. "
+            "Priority: organize email lists and use the email tool. "
+            "Always confirm recipient lists with Ivan before sending."
         )
         
-        # We manually define the tool here to avoid decorator errors
-        evolve_tool = llm.FunctionContext()
-        evolve_tool.ai_callable(description="Install a python package")(evolve_capability)
-
         super().__init__(
             instructions=jarvis_persona,
             llm=google.beta.realtime.RealtimeModel(
                  voice="Charon",
-                 temperature=0.8, 
+                 temperature=0.4, 
             ),
-            tools=[get_weather, search_web, mobile_whatsapp, mobile_discord, evolve_tool],
+            tools=[get_weather, search_web, mobile_whatsapp, mobile_discord],
             chat_ctx=chat_ctx
         )
 
@@ -88,7 +70,7 @@ async def entrypoint(ctx: agents.JobContext):
         all_memories = [m["memory"] for m in results]
         initial_ctx.add_message(
             role="assistant",
-            content=f"Vault Synchronized. Context: {json.dumps(all_memories)}"
+            content=f"Vault Synchronized: {json.dumps(all_memories)}"
         )
 
     mcp_server = MCPServerSse(
@@ -106,6 +88,7 @@ async def entrypoint(ctx: agents.JobContext):
             ), timeout=20.0 
         )
     except:
+        logging.warning("MCP Outreach link failed. Running local protocols.")
         agent = Assistant(chat_ctx=initial_ctx)
 
     await session.start(
@@ -118,28 +101,34 @@ async def entrypoint(ctx: agents.JobContext):
     )
 
     await ctx.connect()
-    await session.say("Ready and waiting, Sir.", allow_interruptions=False)
-    await session.generate_reply()
+    await session.generate_reply(
+        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan and ask if we should proceed with the school email list.",
+    )
 
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0))
 
-# --- PART 3: MODERN STARTUP ---
-async def main():
+# --- PART 3: THE RENDER STARTUP (The actual fix) ---
+async def run_everything():
+    # Use the port Render gives us
     port = int(os.environ.get("PORT", 8080))
     
+    # Define worker options
     options = agents.WorkerOptions(entrypoint_fnc=entrypoint)
-    worker = agents.cli.AgentWorker(options)
     
+    # Start the web server and the agent worker in parallel
     server_config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
     server = uvicorn.Server(server_config)
     
+    # We use asyncio.gather to run the web server and the agent worker side-by-side
+    # This keeps the port open for Render and keeps the voice agent active
     await asyncio.gather(
         server.serve(),
-        worker.run()
+        agents.cli.run_app(options)
     )
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        # This is the safe way to start for Python 3.14
+        asyncio.run(run_everything())
     except (KeyboardInterrupt, SystemExit):
         pass
