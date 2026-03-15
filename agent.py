@@ -7,7 +7,7 @@ import uvicorn
 from dotenv import load_dotenv
 
 from livekit import agents
-from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm
+from livekit.agents import AgentSession, Agent, RoomInputOptions, ChatContext, llm, Worker
 from livekit.plugins import noise_cancellation, google
 from prompts import AGENT_INSTRUCTION, SESSION_INSTRUCTION
 from tools import get_weather, search_web, mobile_whatsapp, mobile_discord 
@@ -17,15 +17,15 @@ from mcp_client.agent_tools import MCPToolsIntegration
 
 load_dotenv()
 
-# --- PART 1: THE WEB SERVER (For Render & Cron-job.org) ---
+# --- PART 1: THE WEB SERVER ---
 app = FastAPI()
 
 @app.get("/healthz")
 async def health_check():
-    """Endpoint for cron-job.org to ping."""
+    """Endpoint for Render health checks and heartbeat."""
     return {"status": "online", "agent": "Jarvis"}
 
-# --- PART 2: ASSISTANT LOGIC ---
+# --- PART 2: THE ASSISTANT ---
 class Assistant(Agent):
     def __init__(self, chat_ctx=None) -> None:
         jarvis_persona = (
@@ -58,77 +58,60 @@ async def entrypoint(ctx: agents.JobContext):
         if messages_formatted:
             try: await asyncio.wait_for(mem0.add(messages_formatted, user_id="Ivan"), timeout=5.0)
             except Exception as e: logging.error(f"Memory sync failed: {e}")
-        chat_ctx.items.clear()
 
     session = AgentSession()
     mem0 = AsyncMemoryClient()
-    user_name = 'Ivan'
-
-    results = await mem0.get_all(user_id=user_name)
+    
+    # Load Memory
+    results = await mem0.get_all(user_id='Ivan')
     initial_ctx = ChatContext()
     if results:
-        all_memories = [m["memory"] for m in results]
-        initial_ctx.add_message(
-            role="assistant",
-            content=f"Vault Synchronized: {json.dumps(all_memories)}"
-        )
+        initial_ctx.add_message(role="assistant", content=f"Vault Synchronized: {json.dumps([m['memory'] for m in results])}")
 
-    mcp_server = MCPServerSse(
-        params={"url": os.environ.get("N8N_MCP_SERVER_URL")},
-        cache_tools_list=True,
-        name="Jarvis-Outreach-Link"
-    )
+    # MCP Setup
+    mcp_server = MCPServerSse(params={"url": os.environ.get("N8N_MCP_SERVER_URL")}, cache_tools_list=True, name="Jarvis-Outreach-Link")
 
     try:
         agent = await asyncio.wait_for(
             MCPToolsIntegration.create_agent_with_tools(
-                agent_class=Assistant, 
-                agent_kwargs={"chat_ctx": initial_ctx},
-                mcp_servers=[mcp_server]
+                agent_class=Assistant, agent_kwargs={"chat_ctx": initial_ctx}, mcp_servers=[mcp_server]
             ), timeout=20.0 
         )
     except:
-        logging.warning("MCP Outreach link failed. Running local protocols.")
         agent = Assistant(chat_ctx=initial_ctx)
 
     await session.start(
         room=ctx.room,
         agent=agent,
-        room_input_options=RoomInputOptions(
-            video_enabled=True,
-            noise_cancellation=noise_cancellation.BVC(),
-        ),
+        room_input_options=RoomInputOptions(video_enabled=True, noise_cancellation=noise_cancellation.BVC()),
     )
-
     await ctx.connect()
-    await session.generate_reply(
-        instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan and ask if we should proceed with the school email list.",
-    )
-
+    await session.generate_reply(instructions=f"{SESSION_INSTRUCTION}\nGreet Ivan and ask about the school email list.")
     ctx.add_shutdown_callback(lambda: shutdown_hook(session._agent.chat_ctx, mem0))
 
-# --- PART 3: THE RENDER STARTUP (The actual fix) ---
-async def run_everything():
-    # Use the port Render gives us
+# --- PART 3: THE DUAL-RUNNER ---
+async def main():
+    # Use the port Render provides
     port = int(os.environ.get("PORT", 8080))
     
-    # Define worker options
+    # 1. Initialize the LiveKit Worker manually
+    # This bypasses the CLI and prevents the "Missing command" error
     options = agents.WorkerOptions(entrypoint_fnc=entrypoint)
+    worker = Worker(options)
     
-    # Start the web server and the agent worker in parallel
-    server_config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
-    server = uvicorn.Server(server_config)
+    # 2. Setup the FastAPI Server config
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="info")
+    server = uvicorn.Server(config)
     
-    # We use asyncio.gather to run the web server and the agent worker side-by-side
-    # This keeps the port open for Render and keeps the voice agent active
+    # 3. Run both concurrently in the same event loop
+    logging.info(f"System Online. Starting Jarvis on port {port}...")
     await asyncio.gather(
-        server.serve(),
-        agents.cli.run_app(options)
+        worker.run(),
+        server.serve()
     )
 
 if __name__ == "__main__":
     try:
-        # This is the safe way to start for Python 3.14
-        asyncio.run(run_everything())
+        asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         pass
